@@ -43,7 +43,24 @@
 - **Hints:** `scientist_hint_id`, `hint_payload` (varies by round)
 - **Screen:** `screen_type` enum (DRAFT, SWAP, BATTLE, RESULT)
 
-### 1.2 Abstract Backend Protocol `[DEV]`
+### `src/backends/bizhawk`
+#### [NEW] [backend.py](file:///home/apollo/Dev/pokemon-battle-factory/src/backends/bizhawk/backend.lua)
+- Implement `BizHawkBackend` class inheriting from `BattleBackend`.
+- **Communication:** Uses Python `socket` to connect to localhost port (default: 9999).
+- **Protocol:** JSON-based or simple text protocol.
+    - `READ <ADDR> <LEN>` -> Returns bytes.
+    - `WRITE <ADDR> <VAL>` -> Writes bytes.
+    - `FRAME <COUNT>` -> Advances emulator.
+    - `INPUT <BUTTONS>` -> Sets input state.
+
+#### [NEW] [connector.lua](file:///home/apollo/Dev/pokemon-battle-factory/src/backends/bizhawk/connector.lua)
+- Lua script to be loaded in BizHawk.
+- Opens a TCP server.
+- Loops waiting for commands, executes them (reading memory/setting input), and responds.
+
+### `src/core`
+#### [MODIFY] [factory.py](file:///home/apollo/Dev/pokemon-battle-factory/src/core/factory.py)
+- Update factory to interpret `backend_type="bizhawk"`.
 
 ### 1.2 Abstract Backend Protocol `[DEV]`
 *Interface for emulator communication.*
