@@ -1,73 +1,112 @@
+import socket
+import logging
 from typing import Optional
-import sys
 from ...core.protocols import BattleBackend
 from ...core.dataclasses import BattleState, FactoryState
+from .decoder import EmeraldDecoder
 
-try:
-    import mgba.core
-    import mgba.image
-    import mgba.log
-    MGBA_AVAILABLE = True
-except ImportError as e:
-    print(f"DEBUG: backend.py failed to import mgba: {e}")
-    MGBA_AVAILABLE = False
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("EmeraldBackend")
+
+HOST = '127.0.0.1'
+PORT = 7777
 
 class EmeraldBackend(BattleBackend):
-    """
-    Real Interface for Pokemon Emerald using LibMGBA.
-    """
+    """mGBA Backend using socket connection."""
     
-    def __init__(self, rom_path: str):
-        if not MGBA_AVAILABLE:
-            raise ImportError(
-                "The 'mgba' python module is not installed.\n"
-                "Please install it using your system package manager or build it from source."
-            )
-        self.core = None
-        self.rom_path = rom_path
+    def __init__(self, rom_path: str = ""):
+        self.sock = None
+        self.decoder = EmeraldDecoder()
+        self.ACTION_MAP = {
+            1: 1,    # A
+            2: 2,    # B
+            3: 4,    # Select
+            4: 8,    # Start
+            5: 16,   # Right
+            6: 32,   # Left
+            7: 64,   # Up
+            8: 128,  # Down
+        }
 
     def connect(self, rom_path: str, save_state: Optional[str] = None) -> None:
-        self.core = mgba.core.loadPath(rom_path)
-        if not self.core:
-             raise RuntimeError(f"Failed to load ROM: {rom_path}")
+        logger.info(f"Connecting to {HOST}:{PORT}...")
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(5.0)
         
-        self.core.reset()
-        if save_state:
-             self.core.loadState(save_state)
-             
+        try:
+            self.sock.connect((HOST, PORT))
+            logger.info("Socket connected, testing with PING...")
+            resp = self._send_command("PING")
+            if resp == "PONG":
+                logger.info("Connected successfully.")
+            else:
+                logger.error(f"Unexpected response: {resp}")
+                raise ConnectionError(f"Unexpected response from mGBA: {resp}")
+        except ConnectionRefusedError as e:
+            logger.error(f"Connection refused: {e}")
+            raise ConnectionError(
+                "Could not connect to mGBA (connection refused).\n"
+                "1. Open mGBA with your ROM\n"
+                "2. Tools -> Scripting -> File -> Load Script\n"
+                "3. Select 'src/backends/emerald/connector.lua'\n"
+                "4. Check console says 'Listening on port 7777'"
+            )
+        except socket.timeout as e:
+            logger.error(f"Connection timed out: {e}")
+            raise ConnectionError(
+                "Could not connect to mGBA (timeout).\n"
+                "The Lua script may be loaded but not accepting connections.\n"
+                "Make sure the game is NOT PAUSED - the script runs in the frame callback."
+            )
+        except Exception as e:
+            logger.error(f"Connection failed with unexpected error: {type(e).__name__}: {e}")
+            raise ConnectionError(f"Connection failed: {e}")
+
+    def _send_command(self, cmd: str) -> str:
+        if not self.sock:
+            raise ConnectionError("Not connected to mGBA")
+        try:
+            logger.debug(f"Sending: {cmd}")
+            self.sock.sendall((cmd + "\n").encode('utf-8'))
+            data = self.sock.recv(4096).decode('utf-8').strip()
+            logger.debug(f"Received: {data}")
+            return data
+        except socket.timeout:
+            logger.warning(f"Command timed out: {cmd}")
+            return "ERROR"
+
     def read_battle_state(self) -> BattleState:
-        # TODO: Implement RAM reading logic here (Phase 2.2)
-        # For now return empty state
         return BattleState()
 
-    def read_factory_state(self) -> FactoryState:
-        # TODO: Implement RAM reading logic here
-        return FactoryState()
-
     def inject_action(self, action_id: int) -> None:
-        # TODO: Implement key press injection
-        pass
+        """Inject a button press."""
+        import time
+        mask = self.ACTION_MAP.get(action_id, 0)
+        if mask == 0:
+            return
+        self._send_command(f"SET_INPUT {mask}")
+        time.sleep(0.1)  # Hold for ~6 frames
+        self._send_command("SET_INPUT 0")
 
     def advance_frame(self, frames: int = 1) -> None:
-        if self.core:
-            for _ in range(frames):
-                self.core.runFrame()
+        self._send_command(f"FRAME_ADVANCE {frames}")
+
+    def run_until_input_required(self) -> BattleState:
+        self.advance_frame(1)
+        return self.read_battle_state()
+
+    def read_factory_state(self) -> FactoryState:
+        return FactoryState()
 
     def save_state(self) -> bytes:
-        # TODO: Implement state serialization
         return b""
 
     def load_state(self, state: bytes) -> None:
-        # TODO: Implement state deserialization
         pass
 
     def reset(self) -> None:
-        if self.core:
-            self.core.reset()
-
-    def run_until_input_required(self) -> BattleState:
-        # TODO: Implement fast forward logic reading 'is_waiting_for_input' flag from RAM
-        return self.read_battle_state()
+        self._send_command("RESET")
 
     def get_game_version(self) -> str:
         return "emerald"

@@ -360,8 +360,8 @@ def main():
         backend_name = "Mock"
     else:
         try:
-            from src.backends.mgba.backend import MGBABackend
-            backend = MGBABackend("")
+            from src.backends.emerald.backend import EmeraldBackend
+            backend = EmeraldBackend("")
             backend_name = "mGBA"
         except ImportError as e:
             print(f"Import failed: {e}")
