@@ -1,277 +1,390 @@
+#!/usr/bin/env python3
+"""
+Pokemon Battle Factory - Live Debugger TUI
+
+A Textual-based terminal UI for debugging and inspecting Pokemon Emerald
+game state via the mGBA backend.
+
+Usage:
+    python tools/live_debugger.py [--backend mgba|mock]
+"""
 import sys
 import os
 import argparse
+import logging
+from datetime import datetime
+from typing import Optional, List
 
-try:
-    import pygame
-except ImportError:
-    print("Error: PyGame is not installed. Please run 'pip install pygame'.")
-    sys.exit(1)
+# Suppress all logging to prevent TUI interference
+logging.disable(logging.CRITICAL)
 
 # Add src to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.backends.emerald.mock import MockEmeraldBackend
-from src.backends.emerald.constants import PLAYER_PARTY_OFFSET, FACTORY_ROOT
-from src.core.knowledge import get_frontier_mon, format_frontier_mon, get_frontier_mon_count
+try:
+    from rich.table import Table
+    from rich.text import Text
+    from rich import box
+    from rich.panel import Panel
+    from rich.align import Align
+    
+    from textual.app import App, ComposeResult
+    from textual.containers import Container, Horizontal, VerticalScroll
+    from textual.widgets import Header, Footer, Static, ListView, ListItem, Label, Button
+    from textual.reactive import reactive
+    from textual.binding import Binding
+except ImportError:
+    print("Error: textual or rich is not installed. Please run 'pip install textual rich'.")
+    sys.exit(1)
 
-# Constants
-WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 600
-FPS = 30
+from src.backends.emerald.memory_reader import (
+    MemoryReader, PartyPokemon, BattleMon, RentalMon, FrontierState
+)
+from src.backends.emerald.constants import FACILITY_FACTORY
+from src.core.knowledge import (
+    get_species_name, get_move_name, get_item_name, 
+    get_frontier_mon
+)
 
-# Colors
-BG_COLOR = (25, 25, 35)
-TEXT_COLOR = (220, 220, 220)
-HIGHLIGHT_COLOR = (100, 200, 255)
-SUCCESS_COLOR = (100, 255, 100)
-ERROR_COLOR = (255, 100, 100)
-MENU_BG = (40, 40, 55)
+class DataView(Static):
+    """Widget to display the data tables."""
+    pass
 
-# Menu Items
-MENU_ITEMS = [
-    ("1", "Test Button A", "send_a"),
-    ("2", "Test Button B", "send_b"),
-    ("3", "Test D-Pad Up", "send_up"),
-    ("4", "Test D-Pad Down", "send_down"),
-    ("5", "Advance 1 Frame", "frame_1"),
-    ("6", "Advance 60 Frames", "frame_60"),
-    ("7", "Read Party Memory", "read_party"),
-    ("8", "Test PING", "ping"),
-    ("9", "Reset Emulator", "reset"),
-    ("0", "Clear Log", "clear"),
-    ("R", "Read Rental Pokemon (scan)", "read_rental"),
-    ("F", "Scan Factory Memory", "scan_factory"),
-]
+class MenuList(ListView):
+    """Sidebar menu."""
+    pass
 
-class DebuggerUI:
-    def __init__(self, backend, backend_name):
+class DebuggerApp(App):
+    """Textual TUI for Pokemon Debugger."""
+
+    CSS = """
+    Screen {
+        layout: vertical;
+    }
+
+    Horizontal {
+        height: 100%;
+    }
+
+    #sidebar {
+        dock: left;
+        width: 20;
+        height: 100%;
+        background: $panel;
+        border-right: vkey $accent;
+    }
+
+    #sidebar Label {
+        padding: 1 2;
+        background: $boost;
+        width: 100%;
+        text-align: center;
+        text-style: bold;
+    }
+
+    MenuList {
+        height: 100%;
+    }
+    
+    ListItem {
+        padding: 1 2;
+    }
+
+    #content {
+        height: 100%;
+        padding: 1 2;
+    }
+
+    DataView {
+        height: auto;
+        min-height: 100%;
+    }
+    """
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("r", "refresh", "Refresh Data"),
+    ]
+
+    def __init__(self, backend, backend_name: str):
+        super().__init__()
         self.backend = backend
         self.backend_name = backend_name
-        self.log_lines = []
-        self.max_log_lines = 15
-        self.font = None
-        self.font_small = None
+        self.reader = MemoryReader(backend)
+        self.current_view = "player_party"
+        self.last_refresh = datetime.now()
+        self.status_message = "Ready"
+        self.status_ok = True
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets for the app."""
+        yield Header(show_clock=True)
         
-    def init_fonts(self):
-        self.font = pygame.font.SysFont("monospace", 18)
-        self.font_small = pygame.font.SysFont("monospace", 14)
-        
-    def log(self, msg, color=TEXT_COLOR):
-        self.log_lines.append((msg, color))
-        if len(self.log_lines) > self.max_log_lines:
-            self.log_lines.pop(0)
+        with Horizontal():
+            with Container(id="sidebar"):
+                yield Label("MENU")
+                yield MenuList(
+                    ListItem(Label("Player Party"), id="player_party"),
+                    ListItem(Label("Enemy Party"), id="enemy_party"),
+                    ListItem(Label("Battle Mons"), id="battle_mons"),
+                    ListItem(Label("Rentals"), id="rental_mons"),
+                    ListItem(Label("Frontier"), id="frontier_state"),
+                    ListItem(Label("Weather"), id="weather"),
+                    ListItem(Label("Connection"), id="ping"),
+                )
             
-    def clear_log(self):
-        self.log_lines = []
+            with VerticalScroll(id="content"):
+                yield DataView(id="data_view")
+
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Called when app starts."""
+        self.title = f"Pokemon Debugger - {self.backend_name}"
+        self.query_one(MenuList).index = 0
+        self.refresh_data()
         
-    def execute_action(self, action):
+        # Auto-refresh every 2 seconds
+        self.set_interval(2.0, self.refresh_data)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Handle menu selection."""
+        if event.item and event.item.id:
+            self.current_view = event.item.id
+            self.refresh_data()
+
+    def action_refresh(self) -> None:
+        """Manually refresh data."""
+        self.refresh_data()
+
+    def refresh_data(self) -> None:
+        """Fetch data from backend and update view."""
+        self.last_refresh = datetime.now()
+        view = self.query_one(DataView)
+        
         try:
-            if action == "send_a":
-                self.backend.inject_action(1)
-                self.log("Sent: Button A (mask=1)", SUCCESS_COLOR)
-            elif action == "send_b":
-                self.backend.inject_action(2)
-                self.log("Sent: Button B (mask=2)", SUCCESS_COLOR)
-            elif action == "send_up":
-                self.backend.inject_action(7)
-                self.log("Sent: D-Pad Up (mask=64)", SUCCESS_COLOR)
-            elif action == "send_down":
-                self.backend.inject_action(8)
-                self.log("Sent: D-Pad Down (mask=128)", SUCCESS_COLOR)
-            elif action == "frame_1":
-                self.backend.advance_frame(1)
-                self.log("Advanced 1 frame", SUCCESS_COLOR)
-            elif action == "frame_60":
-                self.backend.advance_frame(60)
-                self.log("Advanced 60 frames (~1 second)", SUCCESS_COLOR)
-            elif action == "read_party":
-                resp = self.backend._send_command(f"READ_BLOCK {PLAYER_PARTY_OFFSET:X} 64")
-                if resp.startswith("ERROR"):
-                    self.log(f"Read failed: {resp}", ERROR_COLOR)
-                else:
-                    self.log(f"Read {len(resp)//2} bytes from 0x{PLAYER_PARTY_OFFSET:X}", SUCCESS_COLOR)
-                    # Show first 32 hex chars
-                    self.log(f"  Data: {resp[:32]}...", TEXT_COLOR)
-            elif action == "ping":
-                resp = self.backend._send_command("PING")
-                if resp == "PONG":
-                    self.log("PING -> PONG (connection OK)", SUCCESS_COLOR)
-                else:
-                    self.log(f"PING -> {resp} (unexpected)", ERROR_COLOR)
-            elif action == "reset":
-                self.backend.reset()
-                self.log("Sent RESET command", SUCCESS_COLOR)
-            elif action == "clear":
-                self.clear_log()
-            elif action == "read_rental":
-                # Read from potential rental Pokemon memory locations
-                # The FRONTIER_MON ID is typically 2 bytes (u16)
-                # Try reading from various Factory-related offsets
-                scan_addr = 0x0203CF30  # Approximate rental display cursor area
-                resp = self.backend._send_command(f"READ_BLOCK {scan_addr:X} 10")
-                if not resp.startswith("ERROR") and resp != "TIMEOUT":
-                    self.log(f"Rental area @ 0x{scan_addr:X}:", HIGHLIGHT_COLOR)
-                    # Parse as u16 values
-                    for i in range(0, min(len(resp), 20), 4):
-                        val = int(resp[i:i+4], 16) if len(resp) >= i+4 else 0
-                        # Swap bytes for little endian
-                        val_le = ((val & 0xFF) << 8) | ((val >> 8) & 0xFF)
-                        mon = get_frontier_mon(val_le) if val_le < 900 else None
-                        name = mon['species_name'] if mon else "???"
-                        self.log(f"  [{i//4}] ID={val_le:3d} -> {name}", TEXT_COLOR)
-                else:
-                    self.log(f"Read failed: {resp}", ERROR_COLOR)
-            elif action == "scan_factory":
-                # Scan Factory root area for interesting values
-                self.log(f"Scanning Factory @ 0x{FACTORY_ROOT:X}...", HIGHLIGHT_COLOR)
-                resp = self.backend._send_command(f"READ_BLOCK {FACTORY_ROOT:X} 20")
-                if not resp.startswith("ERROR") and resp != "TIMEOUT":
-                    self.log(f"  Raw: {resp[:40]}", TEXT_COLOR)
-                    # Parse first few bytes
-                    if len(resp) >= 8:
-                        round_num = int(resp[0:2], 16)
-                        self.log(f"  Round?: {round_num}", TEXT_COLOR)
-                else:
-                    self.log(f"Read failed: {resp}", ERROR_COLOR)
+            renderable = self.get_renderable()
+            view.update(renderable)
+            self.sub_title = f"{self.status_message} | Last update: {self.last_refresh.strftime('%H:%M:%S')}"
         except Exception as e:
-            self.log(f"Error: {e}", ERROR_COLOR)
+            view.update(Panel(f"[red]Error updating view: {e}[/]", title="Error"))
+            self.status_ok = False
+            self.status_message = "Error"
+
+    def get_renderable(self):
+        """Get the rich renderable for the current view."""
+        try:
+            if self.current_view == "player_party":
+                party = self.reader.read_player_party()
+                self.status_message = f"Player: {len(party)} Pokemon"
+                return self.render_party(party, "Player Party")
             
-    def draw(self, screen):
-        screen.fill(BG_COLOR)
-        
-        # Title
-        title = self.font.render(f"mGBA Backend Tester - {self.backend_name}", True, HIGHLIGHT_COLOR)
-        screen.blit(title, (20, 15))
-        
-        # Menu Box
-        menu_rect = pygame.Rect(20, 50, 350, 300)
-        pygame.draw.rect(screen, MENU_BG, menu_rect, border_radius=8)
-        pygame.draw.rect(screen, HIGHLIGHT_COLOR, menu_rect, 2, border_radius=8)
-        
-        menu_title = self.font.render("Test Menu (Press Key)", True, TEXT_COLOR)
-        screen.blit(menu_title, (30, 60))
-        
-        y = 90
-        for key, label, _ in MENU_ITEMS:
-            text = self.font_small.render(f"[{key}] {label}", True, TEXT_COLOR)
-            screen.blit(text, (40, y))
-            y += 25
+            elif self.current_view == "enemy_party":
+                party = self.reader.read_enemy_party()
+                self.status_message = f"Enemy: {len(party)} Pokemon"
+                return self.render_party(party, "Enemy Party")
             
-        # Log Box
-        log_rect = pygame.Rect(390, 50, 390, 530)
-        pygame.draw.rect(screen, MENU_BG, log_rect, border_radius=8)
-        pygame.draw.rect(screen, (100, 100, 120), log_rect, 2, border_radius=8)
-        
-        log_title = self.font.render("Output Log", True, TEXT_COLOR)
-        screen.blit(log_title, (400, 60))
-        
-        y = 90
-        for msg, color in self.log_lines:
-            # Truncate long messages
-            display_msg = msg[:45] + "..." if len(msg) > 45 else msg
-            text = self.font_small.render(display_msg, True, color)
-            screen.blit(text, (400, y))
-            y += 22
+            elif self.current_view == "battle_mons":
+                mons = self.reader.read_battle_mons()
+                self.status_message = f"Battle: {len(mons)} active"
+                return self.render_battle_mons(mons)
             
-        # Controls Help
-        help_text = self.font_small.render("ESC=Quit | Keys 0-9 = Run Test", True, (120, 120, 140))
-        screen.blit(help_text, (20, WINDOW_HEIGHT - 25))
+            elif self.current_view == "rental_mons":
+                rentals = self.reader.read_rental_mons()
+                self.status_message = f"Rentals: {len(rentals)}"
+                return self.render_rental_mons(rentals)
+            
+            elif self.current_view == "frontier_state":
+                state = self.reader.read_frontier_state()
+                self.status_message = "Frontier state loaded"
+                return self.render_frontier_state(state)
+            
+            elif self.current_view == "weather":
+                weather = self.reader.read_battle_weather()
+                self.status_message = f"Weather: {weather}"
+                return self.render_weather(weather)
+            
+            elif self.current_view == "ping":
+                ok = self.reader.ping()
+                self.status_message = "PONG!" if ok else "Failed"
+                return self.render_connection(ok)
+            
+            return Panel("Select an option from the menu", title="Welcome")
+
+        except Exception as e:
+            self.status_message = f"Error: {str(e)[:20]}"
+            return Panel(f"[red]Error fetching data: {e}[/]", title="Error")
+
+    # -------------------------------------------------------------------------
+    # Renderers (adapted from original)
+    # -------------------------------------------------------------------------
+
+    def render_party(self, party: List[PartyPokemon], title: str) -> Panel:
+        if not party:
+            return Panel("[dim]No Pokemon found[/]", title=title, box=box.ROUNDED)
         
-        # Connection Status
-        status = self.font_small.render(f"Backend: {self.backend_name} | Connected", True, SUCCESS_COLOR)
-        screen.blit(status, (WINDOW_WIDTH - 280, WINDOW_HEIGHT - 25))
+        table = Table(box=box.SIMPLE, show_header=True, header_style="bold", padding=(0, 1), expand=True)
+        table.add_column("#", no_wrap=True)
+        table.add_column("Pokemon", no_wrap=True)
+        table.add_column("Lv", no_wrap=True)
+        table.add_column("HP", no_wrap=True)
+        table.add_column("Stats (A/D/S/SA/SD)", no_wrap=True)
+        table.add_column("Moves")
+        
+        for i, mon in enumerate(party, 1):
+            species = get_species_name(mon.species_id)
+            hp_pct = (mon.current_hp / mon.max_hp * 100) if mon.max_hp > 0 else 0
+            hp_color = "green" if hp_pct > 50 else "yellow" if hp_pct > 25 else "red"
+            
+            stats = f"{mon.attack}/{mon.defense}/{mon.speed}/{mon.sp_attack}/{mon.sp_defense}"
+            
+            moves = [get_move_name(m) for m in mon.moves if m > 0]
+            moves_str = ", ".join(moves)
+            
+            table.add_row(
+                str(i),
+                species,
+                str(mon.level),
+                f"[{hp_color}]{mon.current_hp}/{mon.max_hp}[/]",
+                stats,
+                moves_str
+            )
+        
+        return Panel(table, title=title, box=box.ROUNDED)
+
+    def render_battle_mons(self, mons: List[BattleMon]) -> Panel:
+        if not mons:
+            return Panel("[dim]Not in battle[/]", title="Battle", box=box.ROUNDED)
+        
+        table = Table(box=box.SIMPLE, show_header=True, header_style="bold", padding=(0, 1), expand=True)
+        table.add_column("Slot", no_wrap=True)
+        table.add_column("Pokemon", no_wrap=True)
+        table.add_column("HP", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Stat Stages")
+        
+        slots = ["Player", "Enemy", "Ally", "Foe2"]
+        
+        for i, mon in enumerate(mons):
+            species = get_species_name(mon.species_id)
+            hp_pct = (mon.current_hp / mon.max_hp * 100) if mon.max_hp > 0 else 0
+            hp_color = "green" if hp_pct > 50 else "yellow" if hp_pct > 25 else "red"
+            
+            status = mon.status_name
+            status_color = "green" if status == "Healthy" else "red"
+            
+            stages = []
+            names = ["A", "D", "S", "SA", "SD", "Ac", "Ev"]
+            for j, (n, s) in enumerate(zip(names, mon.stat_stages[1:])):
+                if s != 0:
+                    c = "green" if s > 0 else "red"
+                    stages.append(f"[{c}]{n}{s:+d}[/]")
+            stages_str = " ".join(stages) if stages else "[dim]---[/]"
+            
+            table.add_row(
+                slots[i] if i < len(slots) else f"S{i}",
+                species,
+                f"[{hp_color}]{mon.current_hp}/{mon.max_hp}[/]",
+                f"[{status_color}]{status}[/]",
+                Text.from_markup(stages_str)
+            )
+        
+        return Panel(table, title="Active Battle", box=box.ROUNDED)
+
+    def render_rental_mons(self, rentals: List[RentalMon]) -> Panel:
+        if not rentals:
+            return Panel("[dim]No rentals found[/]", title="Rentals", box=box.ROUNDED)
+        
+        table = Table(box=box.SIMPLE, show_header=True, header_style="bold", padding=(0, 1), expand=True)
+        table.add_column("#", no_wrap=True)
+        table.add_column("Pokemon", no_wrap=True)
+        table.add_column("Nature", no_wrap=True)
+        table.add_column("Item", no_wrap=True)
+        table.add_column("Moves")
+        
+        for rental in rentals:
+            mon = get_frontier_mon(rental.frontier_mon_id)
+            if mon:
+                moves = ", ".join(m for m in mon['moves'] if m != "---")
+                table.add_row(
+                    str(rental.slot + 1),
+                    mon['species_name'],
+                    mon['nature'],
+                    mon['item_name'],
+                    moves
+                )
+            else:
+                table.add_row(str(rental.slot + 1), f"ID:{rental.frontier_mon_id}", "?", "?", "?")
+        
+        return Panel(table, title="Factory Rentals", box=box.ROUNDED)
+
+    def render_frontier_state(self, state: Optional[FrontierState]) -> Panel:
+        if not state:
+            return Panel("[dim]Could not read state[/]", title="Frontier", box=box.ROUNDED)
+        
+        table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2))
+        table.add_row("[bold]Facility:[/]", state.facility_name)
+        table.add_row("[bold]Mode:[/]", 'Singles' if state.battle_mode == 0 else 'Doubles')
+        table.add_row("[bold]Level:[/]", 'Lv50' if state.level_mode == 0 else 'Open')
+        table.add_row("[bold]Streak:[/]", f"[cyan]{state.win_streak}[/]")
+        if state.facility == FACILITY_FACTORY:
+            table.add_row("[bold]Rents:[/]", str(state.rental_count))
+            
+        return Panel(table, title="Frontier State", box=box.ROUNDED)
+
+    def render_weather(self, weather: int) -> Panel:
+        name = self.reader.get_weather_name(weather)
+        color = "cyan" if name != "None" else "dim"
+        return Panel(Align.center(f"[{color}]{name}[/]\n[dim](0x{weather:02X})[/]"), title="Weather", box=box.ROUNDED)
+
+    def render_connection(self, ok: bool) -> Panel:
+        if ok:
+            return Panel(Align.center("[bold green]PONG - Connected![/]"), title="Connection", box=box.ROUNDED)
+        return Panel(Align.center("[bold red]Failed to connect[/]"), title="Connection", box=box.ROUNDED)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pokemon Live Debugger")
-    parser.add_argument("--rom", type=str, default="test.gba", help="Path to ROM file")
-    parser.add_argument("--mock", action="store_true", help="Force use of Mock Backend")
-    parser.add_argument("--backend", type=str, choices=["mock", "bizhawk", "mgba"], default="mgba",
-                        help="Backend to use: mock, bizhawk, or mgba (default: mgba)")
+    parser = argparse.ArgumentParser(description="Pokemon Live Debugger (Textual)")
+    parser.add_argument("--backend", choices=["mock", "mgba"], default="mgba")
     args = parser.parse_args()
-
-    pygame.init()
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Pokemon Battle Factory - Backend Tester")
-    clock = pygame.time.Clock()
-
-    # Backend Selection
+    
+    # Setup backend before starting TUI
+    print("Initializing backend...")
+    
     backend = None
     backend_name = "Unknown"
-    use_mock = args.mock or args.backend == "mock"
     
-    if use_mock:
-        print("Using MOCK Backend.")
-        backend = MockEmeraldBackend(args.rom)
+    if args.backend == "mock":
+        from src.backends.emerald.mock import MockEmeraldBackend
+        backend = MockEmeraldBackend("")
         backend_name = "Mock"
-    elif args.backend == "mgba":
-        print("Using mGBA Backend.")
+    else:
         try:
             from src.backends.mgba.backend import MGBABackend
-            backend = MGBABackend(args.rom)
+            backend = MGBABackend("")
             backend_name = "mGBA"
         except ImportError as e:
-            print(f"Failed to import MGBABackend: {e}")
-            use_mock = True
-    elif args.backend == "bizhawk":
-        print("Using BizHawk Backend.")
-        from src.backends.bizhawk.backend import BizHawkBackend
-        backend = BizHawkBackend(args.rom)
-        backend_name = "BizHawk"
+            print(f"Import failed: {e}")
+            print("Using Mock Backend")
+            from src.backends.emerald.mock import MockEmeraldBackend
+            backend = MockEmeraldBackend("")
+            backend_name = "Mock"
     
-    if use_mock and backend is None:
-        backend = MockEmeraldBackend(args.rom)
-        backend_name = "Mock"
-
     try:
-        backend.connect(args.rom)
+        backend.connect("")
+        print(f"Connected to {backend_name}!")
     except Exception as e:
-        print(f"Failed to connect: {e}")
-        if not use_mock:
-            print("Falling back to Mock Backend...")
-            backend = MockEmeraldBackend(args.rom)
-            backend_name = "Mock (fallback)"
-            backend.connect(args.rom)
-
-    # Create UI
-    ui = DebuggerUI(backend, backend_name)
-    ui.init_fonts()
-    ui.log(f"Connected to {backend_name} backend", SUCCESS_COLOR)
-    ui.log("Press number keys to run tests", TEXT_COLOR)
-
-    # Key to action mapping
-    key_actions = {
-        pygame.K_1: "send_a",
-        pygame.K_2: "send_b",
-        pygame.K_3: "send_up",
-        pygame.K_4: "send_down",
-        pygame.K_5: "frame_1",
-        pygame.K_6: "frame_60",
-        pygame.K_7: "read_party",
-        pygame.K_8: "ping",
-        pygame.K_9: "reset",
-        pygame.K_0: "clear",
-        pygame.K_r: "read_rental",
-        pygame.K_f: "scan_factory",
-    }
-
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-                elif event.key in key_actions:
-                    ui.execute_action(key_actions[event.key])
-        
-        ui.draw(screen)
-        pygame.display.flip()
-        clock.tick(FPS)
-
-    pygame.quit()
+        print(f"Connection failed: {e}")
+        if args.backend != "mock":
+            print("Falling back to Mock")
+            from src.backends.emerald.mock import MockEmeraldBackend
+            backend = MockEmeraldBackend("")
+            backend_name = "Mock"
+            backend.connect("")
+    
+    # Run App
+    app = DebuggerApp(backend, backend_name)
+    app.run()
 
 if __name__ == "__main__":
     main()

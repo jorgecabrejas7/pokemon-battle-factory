@@ -91,3 +91,37 @@ def format_frontier_mon(mon: dict) -> str:
         f"  EVs: {mon['ev_spread']}"
     ]
     return "\n".join(lines)
+
+
+def get_species_name(species_id: int) -> str:
+    """Get species name by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT name FROM species WHERE id = ?', (species_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else f"Species#{species_id}"
+
+
+def get_move_name(move_id: int) -> str:
+    """Get move name by ID."""
+    if move_id == 0:
+        return "---"
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT name FROM moves WHERE id = ?', (move_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else f"Move#{move_id}"
+
+
+def get_item_name(item_id: int) -> str:
+    """Get item name by ID."""
+    if item_id == 0:
+        return "None"
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT name FROM items WHERE id = ?', (item_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else f"Item#{item_id}"
