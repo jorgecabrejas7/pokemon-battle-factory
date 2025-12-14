@@ -12,7 +12,8 @@ except ImportError:
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.backends.emerald.mock import MockEmeraldBackend
-from src.backends.emerald.constants import PLAYER_PARTY_OFFSET
+from src.backends.emerald.constants import PLAYER_PARTY_OFFSET, FACTORY_ROOT
+from src.core.knowledge import get_frontier_mon, format_frontier_mon, get_frontier_mon_count
 
 # Constants
 WINDOW_WIDTH = 800
@@ -35,10 +36,12 @@ MENU_ITEMS = [
     ("4", "Test D-Pad Down", "send_down"),
     ("5", "Advance 1 Frame", "frame_1"),
     ("6", "Advance 60 Frames", "frame_60"),
-    ("7", "Read Party Memory (100 bytes)", "read_party"),
+    ("7", "Read Party Memory", "read_party"),
     ("8", "Test PING", "ping"),
     ("9", "Reset Emulator", "reset"),
     ("0", "Clear Log", "clear"),
+    ("R", "Read Rental Pokemon (scan)", "read_rental"),
+    ("F", "Scan Factory Memory", "scan_factory"),
 ]
 
 class DebuggerUI:
@@ -101,6 +104,36 @@ class DebuggerUI:
                 self.log("Sent RESET command", SUCCESS_COLOR)
             elif action == "clear":
                 self.clear_log()
+            elif action == "read_rental":
+                # Read from potential rental Pokemon memory locations
+                # The FRONTIER_MON ID is typically 2 bytes (u16)
+                # Try reading from various Factory-related offsets
+                scan_addr = 0x0203CF30  # Approximate rental display cursor area
+                resp = self.backend._send_command(f"READ_BLOCK {scan_addr:X} 10")
+                if not resp.startswith("ERROR") and resp != "TIMEOUT":
+                    self.log(f"Rental area @ 0x{scan_addr:X}:", HIGHLIGHT_COLOR)
+                    # Parse as u16 values
+                    for i in range(0, min(len(resp), 20), 4):
+                        val = int(resp[i:i+4], 16) if len(resp) >= i+4 else 0
+                        # Swap bytes for little endian
+                        val_le = ((val & 0xFF) << 8) | ((val >> 8) & 0xFF)
+                        mon = get_frontier_mon(val_le) if val_le < 900 else None
+                        name = mon['species_name'] if mon else "???"
+                        self.log(f"  [{i//4}] ID={val_le:3d} -> {name}", TEXT_COLOR)
+                else:
+                    self.log(f"Read failed: {resp}", ERROR_COLOR)
+            elif action == "scan_factory":
+                # Scan Factory root area for interesting values
+                self.log(f"Scanning Factory @ 0x{FACTORY_ROOT:X}...", HIGHLIGHT_COLOR)
+                resp = self.backend._send_command(f"READ_BLOCK {FACTORY_ROOT:X} 20")
+                if not resp.startswith("ERROR") and resp != "TIMEOUT":
+                    self.log(f"  Raw: {resp[:40]}", TEXT_COLOR)
+                    # Parse first few bytes
+                    if len(resp) >= 8:
+                        round_num = int(resp[0:2], 16)
+                        self.log(f"  Round?: {round_num}", TEXT_COLOR)
+                else:
+                    self.log(f"Read failed: {resp}", ERROR_COLOR)
         except Exception as e:
             self.log(f"Error: {e}", ERROR_COLOR)
             
@@ -219,6 +252,8 @@ def main():
         pygame.K_8: "ping",
         pygame.K_9: "reset",
         pygame.K_0: "clear",
+        pygame.K_r: "read_rental",
+        pygame.K_f: "scan_factory",
     }
 
     running = True
