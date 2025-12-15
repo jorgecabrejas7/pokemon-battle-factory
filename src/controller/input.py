@@ -128,19 +128,62 @@ class InputController:
     - Menu navigation
     
     Uses real-time sleep for timing (game runs continuously).
+    
+    Timing can be controlled via:
+    - Global config: config.timing.set_speed_mode('turbo')
+    - Per-call: input.press_a(hold=0.01, wait=0.02)
+    - Controller-level: InputController(default_hold=0.02)
     """
     
-    def __init__(self, backend: EmeraldBackend, verbose: bool = False):
+    def __init__(
+        self, 
+        backend: EmeraldBackend, 
+        verbose: bool = False,
+        default_hold: float | None = None,
+        default_wait: float | None = None,
+    ):
         """
         Initialize input controller.
         
         Args:
             backend: Emulator backend for sending commands
             verbose: Whether to log button presses
+            default_hold: Override default button hold time (seconds)
+            default_wait: Override default wait after press (seconds)
         """
         self.backend = backend
         self.verbose = verbose
         self._timing = config.timing
+        
+        # Allow per-controller timing overrides
+        self._default_hold = default_hold
+        self._default_wait = default_wait
+    
+    def set_timing(
+        self, 
+        hold: float | None = None, 
+        wait: float | None = None
+    ) -> None:
+        """
+        Set default timing for this controller.
+        
+        Args:
+            hold: Default button hold time (seconds)
+            wait: Default wait after press (seconds)
+        
+        Example:
+            # Set very fast timing
+            input.set_timing(hold=0.01, wait=0.02)
+        """
+        if hold is not None:
+            self._default_hold = hold
+        if wait is not None:
+            self._default_wait = wait
+    
+    def reset_timing(self) -> None:
+        """Reset to config defaults."""
+        self._default_hold = None
+        self._default_wait = None
     
     # =========================================================================
     # Core Button Methods
@@ -158,19 +201,35 @@ class InputController:
         
         Args:
             button: Button to press
-            hold_time: How long to hold (default from config)
-            wait_after: How long to wait after (default from config)
+            hold_time: How long to hold (seconds). Priority: arg > controller default > config
+            wait_after: How long to wait after (seconds). Priority: arg > controller default > config
             silent: Suppress logging
+        
+        Example:
+            # Use config defaults
+            input.press(Button.A)
+            
+            # Custom timing for this press
+            input.press(Button.A, hold_time=0.01, wait_after=0.02)
+            
+            # No wait after
+            input.press(Button.A, wait_after=0)
         """
         if button == Button.WAIT:
-            time.sleep(wait_after or self._timing.wait_short)
+            wait = wait_after if wait_after is not None else self._timing.wait_short
+            time.sleep(wait)
             return
         
-        hold = hold_time or self._timing.button_hold_time
-        wait = wait_after or self._timing.wait_short
+        # Resolve timing: explicit arg > controller default > config
+        hold = hold_time if hold_time is not None else (
+            self._default_hold if self._default_hold is not None else self._timing.button_hold_time
+        )
+        wait = wait_after if wait_after is not None else (
+            self._default_wait if self._default_wait is not None else self._timing.wait_short
+        )
         
         if self.verbose and not silent:
-            logger.debug(f"Press {button.name_pretty}")
+            logger.debug(f"Press {button.name_pretty} (hold={hold:.3f}s, wait={wait:.3f}s)")
         
         # Send button press
         self.backend._send_command(f"SET_INPUT {button.mask}")
@@ -217,37 +276,37 @@ class InputController:
     # Convenience Button Methods
     # =========================================================================
     
-    def press_a(self, wait: float | None = None, silent: bool = False) -> None:
+    def press_a(self, hold: float | None = None, wait: float | None = None, silent: bool = False) -> None:
         """Press A button."""
-        self.press(Button.A, wait_after=wait, silent=silent)
+        self.press(Button.A, hold_time=hold, wait_after=wait, silent=silent)
     
-    def press_b(self, wait: float | None = None, silent: bool = False) -> None:
+    def press_b(self, hold: float | None = None, wait: float | None = None, silent: bool = False) -> None:
         """Press B button."""
-        self.press(Button.B, wait_after=wait, silent=silent)
+        self.press(Button.B, hold_time=hold, wait_after=wait, silent=silent)
     
-    def press_start(self, wait: float | None = None, silent: bool = False) -> None:
+    def press_start(self, hold: float | None = None, wait: float | None = None, silent: bool = False) -> None:
         """Press Start button."""
-        self.press(Button.START, wait_after=wait, silent=silent)
+        self.press(Button.START, hold_time=hold, wait_after=wait, silent=silent)
     
-    def press_select(self, wait: float | None = None, silent: bool = False) -> None:
+    def press_select(self, hold: float | None = None, wait: float | None = None, silent: bool = False) -> None:
         """Press Select button."""
-        self.press(Button.SELECT, wait_after=wait, silent=silent)
+        self.press(Button.SELECT, hold_time=hold, wait_after=wait, silent=silent)
     
-    def press_up(self, wait: float | None = None, silent: bool = False) -> None:
+    def press_up(self, hold: float | None = None, wait: float | None = None, silent: bool = False) -> None:
         """Press Up on D-pad."""
-        self.press(Button.UP, wait_after=wait, silent=silent)
+        self.press(Button.UP, hold_time=hold, wait_after=wait, silent=silent)
     
-    def press_down(self, wait: float | None = None, silent: bool = False) -> None:
+    def press_down(self, hold: float | None = None, wait: float | None = None, silent: bool = False) -> None:
         """Press Down on D-pad."""
-        self.press(Button.DOWN, wait_after=wait, silent=silent)
+        self.press(Button.DOWN, hold_time=hold, wait_after=wait, silent=silent)
     
-    def press_left(self, wait: float | None = None, silent: bool = False) -> None:
+    def press_left(self, hold: float | None = None, wait: float | None = None, silent: bool = False) -> None:
         """Press Left on D-pad."""
-        self.press(Button.LEFT, wait_after=wait, silent=silent)
+        self.press(Button.LEFT, hold_time=hold, wait_after=wait, silent=silent)
     
-    def press_right(self, wait: float | None = None, silent: bool = False) -> None:
+    def press_right(self, hold: float | None = None, wait: float | None = None, silent: bool = False) -> None:
         """Press Right on D-pad."""
-        self.press(Button.RIGHT, wait_after=wait, silent=silent)
+        self.press(Button.RIGHT, hold_time=hold, wait_after=wait, silent=silent)
     
     # =========================================================================
     # Navigation Helpers

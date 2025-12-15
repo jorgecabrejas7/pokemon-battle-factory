@@ -734,8 +734,40 @@ def main():
         default=config.network.port,
         help=f"Emulator port (default: {config.network.port})",
     )
+    parser.add_argument(
+        "--speed",
+        type=str,
+        choices=["normal", "fast", "turbo", "instant"],
+        default="normal",
+        help="Input timing mode: normal, fast, turbo, or instant (default: normal)",
+    )
+    parser.add_argument(
+        "--hold-time",
+        type=float,
+        default=None,
+        help="Custom button hold time in seconds (e.g., 0.01 for very fast)",
+    )
+    parser.add_argument(
+        "--wait-time",
+        type=float,
+        default=None,
+        help="Custom wait time after buttons in seconds (e.g., 0.02 for very fast)",
+    )
     
     args = parser.parse_args()
+    
+    # Apply speed mode
+    if args.speed != "normal":
+        config.timing.set_speed_mode(args.speed)
+        print(f"⚡ Speed mode: {args.speed}")
+    
+    # Apply custom timing if specified
+    if args.hold_time is not None or args.wait_time is not None:
+        config.timing.set_custom_timing(
+            button_hold=args.hold_time,
+            wait_short=args.wait_time,
+        )
+        print(f"⚡ Custom timing: hold={args.hold_time or config.timing.button_hold_time}s, wait={args.wait_time or config.timing.wait_short}s")
     
     # Setup logging
     logger = setup_logging(args.verbose, args.debug)

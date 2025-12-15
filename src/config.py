@@ -96,7 +96,17 @@ class NormalizationConfig:
 
 @dataclass  
 class TimingConfig:
-    """Timing constants for button presses and waits (in seconds)."""
+    """
+    Timing constants for button presses and waits (in seconds).
+    
+    For faster gameplay, reduce button_hold_time and wait times.
+    Minimum practical values depend on emulator speed:
+    - At 1x speed: ~0.03s hold, ~0.05s wait minimum
+    - At 2x speed: ~0.015s hold, ~0.025s wait minimum
+    - At 4x+ speed: Can go even lower
+    
+    Use set_speed_mode() for quick presets.
+    """
     
     # Button press durations
     button_hold_time: float = 0.08      # ~5 frames at 60fps
@@ -122,6 +132,98 @@ class TimingConfig:
     def seconds_to_frames(self, seconds: float) -> int:
         """Convert seconds to frame count."""
         return int(seconds * self.fps)
+    
+    def set_speed_mode(self, mode: str) -> None:
+        """
+        Set timing for different speed modes.
+        
+        Args:
+            mode: One of 'normal', 'fast', 'turbo', 'instant'
+        
+        Presets:
+            normal:  Standard timing (default)
+            fast:    2x faster, good for training
+            turbo:   4x faster, for fast-forward emulation
+            instant: Minimal delays, max speed
+        """
+        presets = {
+            'normal': {
+                'button_hold_time': 0.08,
+                'wait_short': 0.25,
+                'wait_medium': 0.5,
+                'wait_long': 1.0,
+                'wait_battle': 2.0,
+            },
+            'fast': {
+                'button_hold_time': 0.04,
+                'wait_short': 0.12,
+                'wait_medium': 0.25,
+                'wait_long': 0.5,
+                'wait_battle': 1.0,
+            },
+            'turbo': {
+                'button_hold_time': 0.02,
+                'wait_short': 0.05,
+                'wait_medium': 0.1,
+                'wait_long': 0.2,
+                'wait_battle': 0.5,
+            },
+            'instant': {
+                'button_hold_time': 0.01,
+                'wait_short': 0.02,
+                'wait_medium': 0.04,
+                'wait_long': 0.08,
+                'wait_battle': 0.15,
+            },
+        }
+        
+        if mode not in presets:
+            raise ValueError(f"Unknown speed mode: {mode}. Use: {list(presets.keys())}")
+        
+        for attr, value in presets[mode].items():
+            setattr(self, attr, value)
+    
+    def set_custom_timing(
+        self,
+        button_hold: float | None = None,
+        wait_short: float | None = None,
+        wait_medium: float | None = None,
+        wait_long: float | None = None,
+        wait_battle: float | None = None,
+    ) -> None:
+        """
+        Set custom timing values.
+        
+        Args:
+            button_hold: How long to hold buttons (seconds)
+            wait_short: Short wait after actions
+            wait_medium: Medium wait for menu transitions
+            wait_long: Long wait for screen transitions
+            wait_battle: Wait for battle animations
+        """
+        if button_hold is not None:
+            self.button_hold_time = button_hold
+        if wait_short is not None:
+            self.wait_short = wait_short
+        if wait_medium is not None:
+            self.wait_medium = wait_medium
+        if wait_long is not None:
+            self.wait_long = wait_long
+        if wait_battle is not None:
+            self.wait_battle = wait_battle
+    
+    def scale_timing(self, factor: float) -> None:
+        """
+        Scale all timing values by a factor.
+        
+        Args:
+            factor: Multiplier (0.5 = twice as fast, 2.0 = twice as slow)
+        """
+        self.button_hold_time *= factor
+        self.wait_short *= factor
+        self.wait_medium *= factor
+        self.wait_long *= factor
+        self.wait_battle *= factor
 
 
 @dataclass
