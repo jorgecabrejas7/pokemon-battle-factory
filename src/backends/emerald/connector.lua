@@ -144,9 +144,28 @@ local current_key_mask = 0
 -- Command counter for debugging
 local command_count = 0
 
+-- Frame counter (manually tracked since getFrameCount() may not be available)
+local frame_count = 0
+
 -- =============================================================================
 -- UTILITY FUNCTIONS
 -- =============================================================================
+
+--[[
+    Safely get frame count.
+    Tries emu:getFrameCount() if available, otherwise uses manual counter.
+    
+    Returns:
+        Frame count (number)
+--]]
+local function get_frame_count()
+    -- Try the API method first (if available)
+    if emu.getFrameCount then
+        return emu:getFrameCount()
+    end
+    -- Fallback to manual counter
+    return frame_count
+end
 
 --[[
     Decode button mask to human-readable button names.
@@ -379,7 +398,7 @@ function handleCommand(line)
         -- Usage: FRAME_ADVANCE [count]
         -- Returns: "OK" immediately
         local count = tonumber(parts[2]) or 0
-        local frame = emu:getFrameCount()
+        local frame = get_frame_count()
         console:log(string.format("[CMD #%d] FRAME_ADVANCE(%d) -> OK (current frame=%d)", 
             command_count, count, frame))
         return "OK"
@@ -411,14 +430,14 @@ function handleCommand(line)
         
         -- Decode and log button press
         local button_names = decode_button_mask(mask)
-        local frame_count = emu:getFrameCount()
+        local frame = get_frame_count()
         local mask_hex = string.format("0x%03X", mask)
         
         if mask == 0 then
-            console:log(string.format("[INPUT] Frame %d: RELEASE ALL BUTTONS (mask=%s)", frame_count, mask_hex))
+            console:log(string.format("[INPUT] Frame %d: RELEASE ALL BUTTONS (mask=%s)", frame, mask_hex))
         else
             console:log(string.format("[INPUT] Frame %d: PRESS %s (mask=%s, decimal=%d)", 
-                frame_count, button_names, mask_hex, mask))
+                frame, button_names, mask_hex, mask))
         end
         
         -- Store the mask for use in FRAME_ADVANCE
@@ -439,7 +458,7 @@ function handleCommand(line)
         -- Returns: "OK"
         -- Note: This is equivalent to pressing the reset button, not a full restart
         
-        local frame = emu:getFrameCount()
+        local frame = get_frame_count()
         console:log(string.format("[CMD #%d] RESET (frame=%d)", command_count, frame))
         emu:reset()
         return "OK"
@@ -465,7 +484,7 @@ function handleCommand(line)
         --   2. Inject the next action
         
         local flags = emu:read32(ADDR_BATTLE_INPUT_WAIT)
-        local frame = emu:getFrameCount()
+        local frame = get_frame_count()
         local result = (flags == 0) and "YES" or "NO"
         console:log(string.format("[CMD #%d] IS_WAITING_INPUT -> %s (flags=0x%08X, frame=%d)", 
             command_count, result, flags, frame))
@@ -486,7 +505,7 @@ function handleCommand(line)
         local outcome = emu:read8(ADDR_BATTLE_OUTCOME)
         local outcome_names = {"ONGOING", "WIN", "LOSS", "DRAW", "RAN"}
         local outcome_name = outcome_names[outcome + 1] or "UNKNOWN"
-        local frame = emu:getFrameCount()
+        local frame = get_frame_count()
         console:log(string.format("[CMD #%d] GET_BATTLE_OUTCOME -> %d (%s, frame=%d)", 
             command_count, outcome, outcome_name, frame))
         return tostring(outcome)
@@ -507,7 +526,7 @@ function handleCommand(line)
         
         local move_id = emu:read16(ADDR_LAST_USED_MOVE)
         local attacker = emu:read8(ADDR_BATTLER_ATTACKER)
-        local frame = emu:getFrameCount()
+        local frame = get_frame_count()
         local attacker_names = {"Player1", "Enemy1", "Player2", "Enemy2"}
         local attacker_name = attacker_names[attacker + 1] or "Unknown"
         console:log(string.format("[CMD #%d] READ_LAST_MOVES -> move_id=%d, attacker=%d (%s, frame=%d)", 
@@ -528,7 +547,7 @@ function handleCommand(line)
         --   3. Verifying determinism in test scenarios
         
         local rng = emu:read32(ADDR_RNG_VALUE)
-        local frame = emu:getFrameCount()
+        local frame = get_frame_count()
         console:log(string.format("[CMD #%d] READ_RNG -> 0x%08X (decimal=%u, frame=%d)", 
             command_count, rng, rng, frame))
         return tostring(rng)
@@ -557,11 +576,12 @@ server:add("received", function()
     if not client then
         client = server:accept()
         if client then
-            local frame = emu:getFrameCount()
+            local frame = get_frame_count()
             console:log("================================================================================")
             console:log(string.format("✅ CLIENT CONNECTED from Python backend (frame=%d)", frame))
             console:log("================================================================================")
             command_count = 0  -- Reset counter on new connection
+            frame_count = 0    -- Reset frame counter on new connection
             
             -- Set up data receive handler for this client
             client:add("received", function()
@@ -588,12 +608,13 @@ server:add("received", function()
             
             -- Handle client disconnect
             client:add("error", function()
-                local frame = emu:getFrameCount()
+                local frame = get_frame_count()
                 console:log("================================================================================")
                 console:log(string.format("❌ CLIENT DISCONNECTED (frame=%d, total commands=%d)", frame, command_count))
                 console:log("================================================================================")
                 client = nil
                 command_count = 0
+                frame_count = 0
             end)
         end
     end
@@ -613,6 +634,9 @@ end)
     The RL agent is responsible for controlling timing via FRAME_ADVANCE.
 --]]
 callbacks:add("frame", function()
+    -- Increment frame counter
+    frame_count = frame_count + 1
+    
     -- Poll server for new connection attempts
     server:poll()
     
