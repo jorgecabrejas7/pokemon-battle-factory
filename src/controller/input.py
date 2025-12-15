@@ -228,10 +228,11 @@ class InputController:
             self._default_wait if self._default_wait is not None else self._timing.wait_short
         )
         
-        if self.verbose and not silent:
-            logger.debug(f"Press {button.name_pretty} (hold={hold:.3f}s, wait={wait:.3f}s)")
-        
         # Send button press
+        if self.verbose and not silent:
+            # Enhanced debug output
+            print(f"🎮 [BUTTON] {button.name_pretty} (mask=0x{button.mask:03X}, hold={hold:.3f}s, wait={wait:.3f}s)")
+        
         self.backend._send_command(f"SET_INPUT {button.mask}")
         
         # Only sleep if hold time > 0 (allows zero-hold instant clicks)
@@ -239,6 +240,9 @@ class InputController:
             time.sleep(hold)
         
         # Release
+        if self.verbose and not silent:
+            print(f"🎮 [RELEASE] All buttons (hold={hold:.3f}s)")
+        
         self.backend._send_command("SET_INPUT 0")
         
         # Only wait if wait time > 0 (allows zero-wait)

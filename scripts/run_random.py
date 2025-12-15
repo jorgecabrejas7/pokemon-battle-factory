@@ -620,6 +620,11 @@ def main():
         help="Enable verbose logging",
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode: print every button press with details",
+    )
+    parser.add_argument(
         "--interactive", "-i",
         action="store_true",
         help="Run in interactive mode with command prompt",
@@ -687,11 +692,16 @@ def main():
         print(f"⚡ Custom timing: hold={args.hold_time or config.timing.button_hold_time}s, wait={args.wait_time or config.timing.wait_short}s")
     
     # Set log level
-    if args.verbose:
+    if args.verbose or args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Create controller
-    controller = TrainingController(verbose=args.verbose)
+    # Create controller with debug mode (enables button press logging)
+    controller = TrainingController(verbose=args.verbose or args.debug)
+    
+    # Enable debug mode for button presses
+    if args.debug:
+        print("🐛 DEBUG MODE: All button presses will be logged")
+        # The InputController will be created with verbose=True when controller connects
     
     # Connect
     print(f"\nConnecting to emulator at {args.host}:{args.port}...")

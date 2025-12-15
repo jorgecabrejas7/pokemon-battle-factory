@@ -141,9 +141,47 @@ local client = nil
 -- Set by SET_INPUT command
 local current_key_mask = 0
 
+-- Command counter for debugging
+local command_count = 0
+
 -- =============================================================================
 -- UTILITY FUNCTIONS
 -- =============================================================================
+
+--[[
+    Decode button mask to human-readable button names.
+    
+    Args:
+        mask: Button bitmask value
+    
+    Returns:
+        String with button names (e.g., "A+B" or "NONE" or "A+B+UP")
+--]]
+local function decode_button_mask(mask)
+    if mask == 0 then
+        return "NONE (release)"
+    end
+    
+    local buttons = {}
+    -- Check each bit position using division and modulo
+    -- Button bitmask: A=1, B=2, SELECT=4, START=8, RIGHT=16, LEFT=32, UP=64, DOWN=128, R=256, L=512
+    if math.floor(mask / 1) % 2 >= 1 then table.insert(buttons, "A") end
+    if math.floor(mask / 2) % 2 >= 1 then table.insert(buttons, "B") end
+    if math.floor(mask / 4) % 2 >= 1 then table.insert(buttons, "SELECT") end
+    if math.floor(mask / 8) % 2 >= 1 then table.insert(buttons, "START") end
+    if math.floor(mask / 16) % 2 >= 1 then table.insert(buttons, "RIGHT") end
+    if math.floor(mask / 32) % 2 >= 1 then table.insert(buttons, "LEFT") end
+    if math.floor(mask / 64) % 2 >= 1 then table.insert(buttons, "UP") end
+    if math.floor(mask / 128) % 2 >= 1 then table.insert(buttons, "DOWN") end
+    if math.floor(mask / 256) % 2 >= 1 then table.insert(buttons, "R") end
+    if math.floor(mask / 512) % 2 >= 1 then table.insert(buttons, "L") end
+    
+    if #buttons == 0 then
+        return "UNKNOWN(0x" .. string.format("%03X", mask) .. ")"
+    end
+    
+    return table.concat(buttons, "+")
+end
 
 --[[
     Parse a command string into an array of space-separated parts.
@@ -178,6 +216,9 @@ function handleCommand(line)
     local parts = parseCommand(line)
     local cmd = parts[1]
     
+    -- Increment command counter
+    command_count = command_count + 1
+    
     -- =========================================================================
     -- BASIC COMMANDS
     -- =========================================================================
@@ -186,6 +227,7 @@ function handleCommand(line)
         -- Simple connection test
         -- Usage: PING
         -- Returns: "PONG"
+        console:log(string.format("[CMD #%d] PING -> PONG", command_count))
         return "PONG"
         
     -- =========================================================================
@@ -336,6 +378,10 @@ function handleCommand(line)
         -- Kept for backwards compatibility but does nothing.
         -- Usage: FRAME_ADVANCE [count]
         -- Returns: "OK" immediately
+        local count = tonumber(parts[2]) or 0
+        local frame = emu:getFrameCount()
+        console:log(string.format("[CMD #%d] FRAME_ADVANCE(%d) -> OK (current frame=%d)", 
+            command_count, count, frame))
         return "OK"
         
     elseif cmd == "SET_INPUT" then
@@ -363,6 +409,18 @@ function handleCommand(line)
             return "ERROR: Invalid mask. Usage: SET_INPUT <button_mask_decimal>"
         end
         
+        -- Decode and log button press
+        local button_names = decode_button_mask(mask)
+        local frame_count = emu:getFrameCount()
+        local mask_hex = string.format("0x%03X", mask)
+        
+        if mask == 0 then
+            console:log(string.format("[INPUT] Frame %d: RELEASE ALL BUTTONS (mask=%s)", frame_count, mask_hex))
+        else
+            console:log(string.format("[INPUT] Frame %d: PRESS %s (mask=%s, decimal=%d)", 
+                frame_count, button_names, mask_hex, mask))
+        end
+        
         -- Store the mask for use in FRAME_ADVANCE
         current_key_mask = mask
         
@@ -381,6 +439,8 @@ function handleCommand(line)
         -- Returns: "OK"
         -- Note: This is equivalent to pressing the reset button, not a full restart
         
+        local frame = emu:getFrameCount()
+        console:log(string.format("[CMD #%d] RESET (frame=%d)", command_count, frame))
         emu:reset()
         return "OK"
         
@@ -405,11 +465,11 @@ function handleCommand(line)
         --   2. Inject the next action
         
         local flags = emu:read32(ADDR_BATTLE_INPUT_WAIT)
-        if flags == 0 then
-            return "YES"
-        else
-            return "NO"
-        end
+        local frame = emu:getFrameCount()
+        local result = (flags == 0) and "YES" or "NO"
+        console:log(string.format("[CMD #%d] IS_WAITING_INPUT -> %s (flags=0x%08X, frame=%d)", 
+            command_count, result, flags, frame))
+        return result
         
     elseif cmd == "GET_BATTLE_OUTCOME" then
         -- Get the current battle outcome
@@ -424,6 +484,11 @@ function handleCommand(line)
         -- Check this after IS_WAITING_INPUT returns NO to see if battle ended
         
         local outcome = emu:read8(ADDR_BATTLE_OUTCOME)
+        local outcome_names = {"ONGOING", "WIN", "LOSS", "DRAW", "RAN"}
+        local outcome_name = outcome_names[outcome + 1] or "UNKNOWN"
+        local frame = emu:getFrameCount()
+        console:log(string.format("[CMD #%d] GET_BATTLE_OUTCOME -> %d (%s, frame=%d)", 
+            command_count, outcome, outcome_name, frame))
         return tostring(outcome)
         
     elseif cmd == "READ_LAST_MOVES" then
@@ -442,6 +507,11 @@ function handleCommand(line)
         
         local move_id = emu:read16(ADDR_LAST_USED_MOVE)
         local attacker = emu:read8(ADDR_BATTLER_ATTACKER)
+        local frame = emu:getFrameCount()
+        local attacker_names = {"Player1", "Enemy1", "Player2", "Enemy2"}
+        local attacker_name = attacker_names[attacker + 1] or "Unknown"
+        console:log(string.format("[CMD #%d] READ_LAST_MOVES -> move_id=%d, attacker=%d (%s, frame=%d)", 
+            command_count, move_id, attacker, attacker_name, frame))
         return tostring(move_id) .. "," .. tostring(attacker)
         
     elseif cmd == "READ_RNG" then
@@ -458,6 +528,9 @@ function handleCommand(line)
         --   3. Verifying determinism in test scenarios
         
         local rng = emu:read32(ADDR_RNG_VALUE)
+        local frame = emu:getFrameCount()
+        console:log(string.format("[CMD #%d] READ_RNG -> 0x%08X (decimal=%u, frame=%d)", 
+            command_count, rng, rng, frame))
         return tostring(rng)
         
     elseif cmd == "HELP" then
@@ -484,7 +557,11 @@ server:add("received", function()
     if not client then
         client = server:accept()
         if client then
-            console:log("Client connected from Python backend!")
+            local frame = emu:getFrameCount()
+            console:log("================================================================================")
+            console:log(string.format("✅ CLIENT CONNECTED from Python backend (frame=%d)", frame))
+            console:log("================================================================================")
+            command_count = 0  -- Reset counter on new connection
             
             -- Set up data receive handler for this client
             client:add("received", function()
@@ -493,18 +570,17 @@ server:add("received", function()
                     -- Process each line (command) in the received data
                     -- Commands are newline-separated
                     for line in string.gmatch(data, "[^\r\n]+") do
-                        -- Log received command for debugging
-                        console:log(">> " .. line)
-                        
                         -- Process command and send response
                         local response = handleCommand(line)
                         client:send(response .. "\n")
                         
                         -- Log response for debugging (truncate long responses)
-                        if #response > 50 then
-                            console:log("<< " .. string.sub(response, 1, 50) .. "...")
-                        else
-                            console:log("<< " .. response)
+                        -- Note: Command details are logged inside handleCommand()
+                        -- Only log errors or very long responses to avoid spam
+                        if string.find(response, "ERROR") then
+                            console:log(string.format("[RESPONSE] ❌ %s", response))
+                        elseif #response > 100 then
+                            console:log(string.format("[RESPONSE] %s... (%d bytes)", string.sub(response, 1, 50), #response))
                         end
                     end
                 end
@@ -512,8 +588,12 @@ server:add("received", function()
             
             -- Handle client disconnect
             client:add("error", function()
-                console:log("Client disconnected")
+                local frame = emu:getFrameCount()
+                console:log("================================================================================")
+                console:log(string.format("❌ CLIENT DISCONNECTED (frame=%d, total commands=%d)", frame, command_count))
+                console:log("================================================================================")
                 client = nil
+                command_count = 0
             end)
         end
     end

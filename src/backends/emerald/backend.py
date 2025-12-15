@@ -165,18 +165,18 @@ class EmeraldBackend(BattleBackend):
                     )
                 )
             elif isinstance(e, socket.timeout):
-            raise ConnectionError(
-                    "Connection to mGBA timed out",
-                    host=self._host,
-                    port=self._port,
-                    reason="The game may be paused - script only runs during gameplay"
-            )
-            else:
-            raise ConnectionError(
-                    f"Connection failed: {e}",
-                    host=self._host,
-                    port=self._port,
+                raise ConnectionError(
+                        "Connection to mGBA timed out",
+                        host=self._host,
+                        port=self._port,
+                        reason="The game may be paused - script only runs during gameplay"
                 )
+            else:
+                raise ConnectionError(
+                        f"Connection failed: {e}",
+                        host=self._host,
+                        port=self._port,
+                    )
     
     def disconnect(self) -> None:
         """Disconnect from emulator and cleanup resources."""
@@ -273,14 +273,14 @@ class EmeraldBackend(BattleBackend):
                  if mid > 0:
                     try:
                         mdata = self.kb.get_move(mid)
-                     p_moves.append(Move(
-                         move_id=mid,
-                            name=mdata.name,
-                            type_id=0,
-                            base_power=mdata.power,
-                            accuracy=mdata.accuracy,
-                            current_pp=p_data.pp[i] if i < len(p_data.pp) else 0
-                        ))
+                        p_moves.append(Move(
+                            move_id=mid,
+                                name=mdata.name,
+                                type_id=0,
+                                base_power=mdata.power,
+                                accuracy=mdata.accuracy,
+                                current_pp=p_data.pp[i] if i < len(p_data.pp) else 0
+                            ))
                     except Exception:
                         p_moves.append(Move(move_id=mid, name=f"Move#{mid}"))
 
@@ -311,12 +311,12 @@ class EmeraldBackend(BattleBackend):
             for mid in self.revealed_enemy_moves:
                 try:
                     mdata = self.kb.get_move(mid)
-                e_moves.append(Move(
-                    move_id=mid,
-                        name=mdata.name,
-                        base_power=mdata.power,
-                        accuracy=mdata.accuracy
-                ))
+                    e_moves.append(Move(
+                        move_id=mid,
+                            name=mdata.name,
+                            base_power=mdata.power,
+                            accuracy=mdata.accuracy
+                    ))
                 except Exception:
                     e_moves.append(Move(move_id=mid, name=f"Move#{mid}"))
             
