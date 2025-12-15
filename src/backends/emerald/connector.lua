@@ -84,14 +84,20 @@ end
 
 -- Display startup message with available commands
 console:log("================================================================================")
-console:log("Battle Factory RL Agent - mGBA Connector v2.0")
+console:log("Battle Factory RL Agent - mGBA Connector v2.1 (Frame-Based Input)")
 console:log("================================================================================")
 console:log("Listening on port 7777")
 console:log("")
 console:log("Memory Commands:")
 console:log("  PING, READ_BLOCK, READ_U16, READ_U32, READ_PTR, READ_PTR_U16, WRITE_BYTE")
 console:log("")
-console:log("Control Commands:")
+console:log("Input Commands (Frame-Based - works with fast-forward):")
+console:log("  TAP_BUTTON <mask> [frames]  - Press button for N frames (default: 8)")
+console:log("  HOLD_BUTTON <mask> <frames> - Hold button for exact N frames")
+console:log("  GET_FRAME                   - Get current frame number")
+console:log("  CLEAR_KEY_QUEUE             - Cancel all pending button presses")
+console:log("")
+console:log("Legacy Input (may fail during fast-forward):")
 console:log("  SET_INPUT, FRAME_ADVANCE, RESET")
 console:log("")
 console:log("RL Commands:")
@@ -138,7 +144,7 @@ local client = nil
 
 -- Current button state mask to apply during FRAME_ADVANCE
 -- This allows holding buttons across multiple frames
--- Set by SET_INPUT command
+-- Set by SET_INPUT command (legacy - prefer TAP_BUTTON for fast-forward support)
 local current_key_mask = 0
 
 -- Command counter for debugging
@@ -146,6 +152,72 @@ local command_count = 0
 
 -- Frame counter (manually tracked since getFrameCount() may not be available)
 local frame_count = 0
+
+-- =============================================================================
+-- FRAME-BASED KEY EVENT QUEUE
+-- =============================================================================
+-- This queue system ensures buttons are held for a specific number of frames,
+-- making input injection work correctly regardless of emulator speed
+-- (including fast-forward mode).
+
+-- Queue of pending key events
+-- Each entry: { keyMask, startFrame, endFrame, pressed }
+local keyEventQueue = {}
+
+--[[
+    Enqueue a button press for a specific number of frames.
+    
+    Args:
+        keyMask: GBA button bitmask
+        duration: Number of frames to hold the button
+    
+    The button will be pressed starting this frame and released after
+    'duration' frames have elapsed.
+--]]
+local function enqueueButton(keyMask, duration)
+    local startFrame = frame_count
+    local endFrame = startFrame + duration
+    
+    table.insert(keyEventQueue, {
+        keyMask = keyMask,
+        startFrame = startFrame,
+        endFrame = endFrame,
+        pressed = false
+    })
+    
+    console:log(string.format("[KEY_QUEUE] Enqueued mask=0x%03X for frames %d-%d (duration=%d)",
+        keyMask, startFrame, endFrame, duration))
+end
+
+--[[
+    Process the key event queue. Called every frame.
+    
+    - Presses keys when their start frame is reached
+    - Releases keys when their end frame is passed
+    - Removes completed events from the queue
+--]]
+local function updateKeyQueue()
+    local indexesToRemove = {}
+    
+    for index, keyEvent in ipairs(keyEventQueue) do
+        -- Press the key if we've reached the start frame and haven't pressed yet
+        if frame_count >= keyEvent.startFrame and 
+           frame_count <= keyEvent.endFrame and 
+           not keyEvent.pressed then
+            emu:addKeys(keyEvent.keyMask)
+            keyEvent.pressed = true
+        -- Release and mark for removal if we've passed the end frame
+        elseif frame_count > keyEvent.endFrame then
+            emu:clearKeys(keyEvent.keyMask)
+            table.insert(indexesToRemove, index)
+        end
+    end
+    
+    -- Remove completed events (iterate backwards to preserve indices)
+    for i = #indexesToRemove, 1, -1 do
+        table.remove(keyEventQueue, indexesToRemove[i])
+    end
+end
 
 -- =============================================================================
 -- UTILITY FUNCTIONS
@@ -451,6 +523,96 @@ function handleCommand(line)
             emu:addKeys(mask)
         end
         return "OK"
+    
+    elseif cmd == "TAP_BUTTON" then
+        -- Queue a button tap for a specific number of frames
+        -- Usage: TAP_BUTTON <button_mask> [frames]
+        -- Returns: "OK"
+        --
+        -- This is the RECOMMENDED command for button presses when using
+        -- fast-forward mode. The button will be held for the specified
+        -- number of frames regardless of emulator speed.
+        --
+        -- Args:
+        --   button_mask: Decimal button bitmask (see SET_INPUT for values)
+        --   frames: Number of frames to hold (default: 8, ~130ms at 60fps)
+        --
+        -- Example: TAP_BUTTON 1 8     (press A for 8 frames)
+        -- Example: TAP_BUTTON 64      (press UP for default 8 frames)
+        
+        local mask = tonumber(parts[2])
+        if not mask then
+            return "ERROR: Invalid mask. Usage: TAP_BUTTON <mask> [frames]"
+        end
+        
+        local duration = tonumber(parts[3]) or 8  -- Default: 8 frames
+        
+        -- Clamp duration to reasonable range
+        if duration < 1 then duration = 1 end
+        if duration > 120 then duration = 120 end  -- Max ~2 seconds
+        
+        local button_names = decode_button_mask(mask)
+        console:log(string.format("[CMD #%d] TAP_BUTTON %s for %d frames (frame=%d)",
+            command_count, button_names, duration, frame_count))
+        
+        enqueueButton(mask, duration)
+        return "OK"
+    
+    elseif cmd == "HOLD_BUTTON" then
+        -- Queue a button hold for an exact number of frames
+        -- Usage: HOLD_BUTTON <button_mask> <frames>
+        -- Returns: "OK"
+        --
+        -- Similar to TAP_BUTTON but frames argument is required.
+        -- Use for walking (hold direction for N tiles worth of frames)
+        -- or for actions requiring specific hold durations.
+        --
+        -- Example: HOLD_BUTTON 64 30   (hold UP for 30 frames = ~0.5 sec)
+        
+        local mask = tonumber(parts[2])
+        local duration = tonumber(parts[3])
+        
+        if not mask or not duration then
+            return "ERROR: Usage: HOLD_BUTTON <mask> <frames>"
+        end
+        
+        -- Clamp duration to reasonable range
+        if duration < 1 then duration = 1 end
+        if duration > 600 then duration = 600 end  -- Max 10 seconds
+        
+        local button_names = decode_button_mask(mask)
+        console:log(string.format("[CMD #%d] HOLD_BUTTON %s for %d frames (frame=%d)",
+            command_count, button_names, duration, frame_count))
+        
+        enqueueButton(mask, duration)
+        return "OK"
+    
+    elseif cmd == "GET_FRAME" then
+        -- Get the current frame number
+        -- Usage: GET_FRAME
+        -- Returns: Current frame count as decimal string
+        --
+        -- Useful for:
+        --   - Synchronization between Python and Lua
+        --   - Debugging timing issues
+        --   - Verifying frame-based operations completed
+        
+        return tostring(frame_count)
+    
+    elseif cmd == "CLEAR_KEY_QUEUE" then
+        -- Clear all pending key events from the queue
+        -- Usage: CLEAR_KEY_QUEUE
+        -- Returns: "OK"
+        --
+        -- Use this to cancel all pending button presses, e.g., when
+        -- changing states or recovering from errors.
+        
+        local count = #keyEventQueue
+        keyEventQueue = {}
+        emu:clearKeys(0x3FF)  -- Release all buttons
+        console:log(string.format("[CMD #%d] CLEAR_KEY_QUEUE: Cleared %d events (frame=%d)",
+            command_count, count, frame_count))
+        return "OK"
         
     elseif cmd == "RESET" then
         -- Reset the emulator (soft reset)
@@ -554,7 +716,7 @@ function handleCommand(line)
         
     elseif cmd == "HELP" then
         -- Display available commands
-        return "Commands: PING, READ_BLOCK, READ_U16, READ_U32, READ_PTR, READ_PTR_U16, WRITE_BYTE, SET_INPUT, FRAME_ADVANCE, RESET, IS_WAITING_INPUT, GET_BATTLE_OUTCOME, READ_LAST_MOVES, READ_RNG"
+        return "Commands: PING, READ_BLOCK, READ_U16, READ_U32, READ_PTR, READ_PTR_U16, WRITE_BYTE, SET_INPUT, TAP_BUTTON, HOLD_BUTTON, GET_FRAME, CLEAR_KEY_QUEUE, FRAME_ADVANCE, RESET, IS_WAITING_INPUT, GET_BATTLE_OUTCOME, READ_LAST_MOVES, READ_RNG"
         
     else
         return "ERROR: Unknown command '" .. tostring(cmd) .. "'. Send HELP for command list."
@@ -636,6 +798,9 @@ end)
 callbacks:add("frame", function()
     -- Increment frame counter
     frame_count = frame_count + 1
+    
+    -- Process key event queue (frame-based button handling)
+    updateKeyQueue()
     
     -- Poll server for new connection attempts
     server:poll()
