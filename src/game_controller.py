@@ -167,6 +167,8 @@ class GameController:
     BUTTON_LEFT = 32
     BUTTON_UP = 64
     BUTTON_DOWN = 128
+    BUTTON_R = 256
+    BUTTON_L = 512
     
     # Timing constants (in seconds - game runs continuously)
     TIME_BUTTON_PRESS = 0.08     # How long to hold a button (~5 frames)
@@ -290,7 +292,7 @@ class GameController:
     # Input Helpers
     # =========================================================================
     
-    def _press_button(self, button: int, hold_time: float = None, wait_time: float = None):
+    def _press_button(self, button: int, hold_time: float = None, wait_time: float = None, silent: bool = False):
         """
         Press and release a button.
         
@@ -298,9 +300,28 @@ class GameController:
             button: Button constant (BUTTON_A, BUTTON_B, etc.)
             hold_time: How long to hold in seconds (default: TIME_BUTTON_PRESS)
             wait_time: How long to wait after in seconds (default: TIME_WAIT_SHORT)
+            silent: If True, don't print button press (default: False)
         """
         hold = hold_time if hold_time is not None else self.TIME_BUTTON_PRESS
         wait = wait_time if wait_time is not None else self.TIME_WAIT_SHORT
+        
+        # Get button name for logging
+        button_names = {
+            self.BUTTON_A: "A",
+            self.BUTTON_B: "B",
+            self.BUTTON_SELECT: "SELECT",
+            self.BUTTON_START: "START",
+            self.BUTTON_RIGHT: "→",
+            self.BUTTON_LEFT: "←",
+            self.BUTTON_UP: "↑",
+            self.BUTTON_DOWN: "↓",
+            self.BUTTON_R: "R",
+            self.BUTTON_L: "L",
+        }
+        btn_name = button_names.get(button, f"BTN_{button}")
+        
+        if not silent:
+            print(f"        🎮 Press {btn_name}", flush=True)
         
         # Press button
         self.backend._send_command(f"SET_INPUT {button}")
@@ -313,33 +334,33 @@ class GameController:
         if self.auto_wait and wait > 0:
             time.sleep(wait)
     
-    def press_a(self, wait: float = None):
+    def press_a(self, wait: float = None, silent: bool = False):
         """Press A button."""
-        self._press_button(self.BUTTON_A, wait_time=wait)
+        self._press_button(self.BUTTON_A, wait_time=wait, silent=silent)
     
-    def press_b(self, wait: float = None):
+    def press_b(self, wait: float = None, silent: bool = False):
         """Press B button."""
-        self._press_button(self.BUTTON_B, wait_time=wait)
+        self._press_button(self.BUTTON_B, wait_time=wait, silent=silent)
     
-    def press_start(self, wait: float = None):
+    def press_start(self, wait: float = None, silent: bool = False):
         """Press Start button."""
-        self._press_button(self.BUTTON_START, wait_time=wait)
+        self._press_button(self.BUTTON_START, wait_time=wait, silent=silent)
     
-    def press_up(self, wait: float = None):
+    def press_up(self, wait: float = None, silent: bool = False):
         """Press Up on D-pad."""
-        self._press_button(self.BUTTON_UP, wait_time=wait)
+        self._press_button(self.BUTTON_UP, wait_time=wait, silent=silent)
     
-    def press_down(self, wait: float = None):
+    def press_down(self, wait: float = None, silent: bool = False):
         """Press Down on D-pad."""
-        self._press_button(self.BUTTON_DOWN, wait_time=wait)
+        self._press_button(self.BUTTON_DOWN, wait_time=wait, silent=silent)
     
-    def press_left(self, wait: float = None):
+    def press_left(self, wait: float = None, silent: bool = False):
         """Press Left on D-pad."""
-        self._press_button(self.BUTTON_LEFT, wait_time=wait)
+        self._press_button(self.BUTTON_LEFT, wait_time=wait, silent=silent)
     
-    def press_right(self, wait: float = None):
+    def press_right(self, wait: float = None, silent: bool = False):
         """Press Right on D-pad."""
-        self._press_button(self.BUTTON_RIGHT, wait_time=wait)
+        self._press_button(self.BUTTON_RIGHT, wait_time=wait, silent=silent)
     
     def wait(self, seconds: float):
         """Wait for N seconds without input."""
@@ -708,44 +729,69 @@ class GameController:
         
         For each of the 3 Pokemon indices (0-5):
         1. Press right arrow N times (N = index)
-        2. Press A (select Pokemon)
-        3. Press down arrow (move to confirm)
+        2. Press A (select Pokemon - opens submenu)
+        3. Press down arrow (move to "SELECT" option in submenu)
         4. Press A (confirm selection)
         5. Press left arrow N times (reset cursor position)
         
         After all 3 selections, press A 3 times to finalize team.
         
+        Note: The draft screen shows 6 Pokemon. When you press A on one, a submenu
+        appears with options like "SUMMARY" and "SELECT". We need to navigate to SELECT.
+        
         Args:
             selections: Array of 3 indices [0-5] representing Pokemon to pick
         """
-        logger.info(f"  Drafting Pokemon at indices: {selections}")
+        print(f"  📋 Drafting Pokemon at indices: {list(selections)}", flush=True)
         
         for i, index in enumerate(selections):
             index = int(index)
-            logger.info(f"    Picking Pokemon {i+1}/3 at index {index}")
+            print(f"\n    ━━━ Picking Pokemon {i+1}/3 at index {index} ━━━", flush=True)
             
             # Step 1: Press right arrow N times to reach the Pokemon
-            for _ in range(index):
-                self.press_right(wait=0.1)
+            if index > 0:
+                print(f"      [1/5] Moving right {index} times...", flush=True)
+                for j in range(index):
+                    self.press_right(wait=0.2)
+                    print(f"            Right {j+1}/{index}", flush=True)
+            else:
+                print(f"      [1/5] Already at index 0, no movement needed", flush=True)
             
-            # Step 2: Press A to select the Pokemon
-            self.press_a(wait=0.2)
+            time.sleep(0.3)  # Wait before opening submenu
             
-            # Step 3: Press down arrow
-            self.press_down(wait=0.1)
+            # Step 2: Press A to open the submenu
+            print(f"      [2/5] Pressing A to open submenu...", flush=True)
+            self.press_a(wait=0.5)
+            
+            # Step 3: Press down arrow to move to "SELECT" option
+            print(f"      [3/5] Pressing Down to go to SELECT option...", flush=True)
+            self.press_down(wait=0.3)
             
             # Step 4: Press A to confirm selection
-            self.press_a(wait=0.3)
+            print(f"      [4/5] Pressing A to confirm selection...", flush=True)
+            self.press_a(wait=1.0)  # Longer wait for the selection animation
             
             # Step 5: Press left arrow N times to reset cursor
-            for _ in range(index):
-                self.press_left(wait=0.1)
+            if index > 0:
+                print(f"      [5/5] Moving left {index} times to reset cursor...", flush=True)
+                for j in range(index):
+                    self.press_left(wait=0.2)
+                    print(f"            Left {j+1}/{index}", flush=True)
+            else:
+                print(f"      [5/5] At index 0, no reset needed", flush=True)
+            
+            print(f"      ✓ Pokemon {i+1}/3 selected!", flush=True)
+            time.sleep(0.5)  # Extra wait between selections
         
         # Final confirmation: Press A 3 times
-        logger.info("    Confirming team selection...")
-        self.press_a(wait=0.3)
-        self.press_a(wait=0.3)
+        print(f"\n    ━━━ Confirming final team ━━━", flush=True)
+        print(f"      Pressing A (1/3)...", flush=True)
         self.press_a(wait=0.5)
+        print(f"      Pressing A (2/3)...", flush=True)
+        self.press_a(wait=0.5)
+        print(f"      Pressing A (3/3)...", flush=True)
+        self.press_a(wait=1.0)
+        print(f"    ✓ Draft complete!", flush=True)
     
     def step_battle(self, agent: TacticianAgent = None) -> PhaseResult:
         """

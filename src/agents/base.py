@@ -1,49 +1,111 @@
 """
 Base Agent Interfaces for Battle Factory RL System.
 
-Defines abstract base classes that all agent implementations must follow.
-This ensures consistency between random, heuristic, and trained agents,
-allowing seamless swapping during development and testing.
+Defines abstract base classes and protocols that all agent implementations
+must follow, ensuring consistency between random, heuristic, and trained agents.
 
-The interfaces match the signatures expected by BattleFactorySystem:
+The interfaces match the signatures expected by TrainingController:
 - Drafter: Called during draft and swap phases
 - Tactician: Called during battle for turn-by-turn decisions
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Tuple, Optional
+from typing import Any, Tuple, Optional, Protocol, runtime_checkable
 import numpy as np
 
+from ..core.enums import GamePhase
 
-class BaseDrafter(ABC):
+
+# =============================================================================
+# Protocol Definitions (for duck typing)
+# =============================================================================
+
+@runtime_checkable
+class DrafterProtocol(Protocol):
     """
-    Abstract base class for Drafter agents.
+    Protocol for drafter agents.
     
-    The Drafter handles two key decisions in Battle Factory:
-    1. Initial draft: Select 3 Pokemon from 6 rental candidates
+    Drafters handle two key decisions:
+    1. Initial draft: Select 3 Pokemon from 6 rentals
     2. Post-battle swap: Decide whether to swap a team member
-    
-    The interface uses a unified __call__ method that the system
-    invokes for both draft and swap phases. The agent must determine
-    the appropriate action based on the observation structure.
     """
     
-    @abstractmethod
-    def __call__(self, obs: np.ndarray) -> np.ndarray:
+    def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
         """
-        Main policy interface called by BattleFactorySystem.
+        Main policy interface.
         
         Args:
             obs: Observation array containing:
                 - For draft: 6 rental Pokemon features + context
                 - For swap: Current team + swap candidate + context
-                
+            phase: Current game phase (DRAFT_SCREEN or SWAP_SCREEN)
+            
         Returns:
             Action array:
-                - For draft: np.ndarray of shape (3,) with indices [0-5]
-                  representing which 3 Pokemon to select
-                - For swap: np.ndarray of shape (1,) with value [0-3]
-                  where 0=keep team, 1-3=swap slot N with candidate
+                - For draft: Shape (3,) with indices [0-5] for selections
+                - For swap: Shape (1,) with value [0-3] for swap decision
+        """
+        ...
+
+
+@runtime_checkable
+class TacticianProtocol(Protocol):
+    """
+    Protocol for tactician agents.
+    
+    Tacticians make turn-by-turn battle decisions with recurrent state.
+    """
+    
+    def __call__(
+        self,
+        obs: np.ndarray,
+        phase: GamePhase,
+        action_mask: np.ndarray,
+    ) -> int:
+        """
+        Main policy interface.
+        
+        Args:
+            obs: Battle observation array
+            phase: Current game phase (IN_BATTLE)
+            action_mask: Binary mask [6] of valid actions
+            
+        Returns:
+            Action index 0-5 (Move 1-4, Switch 1-2)
+        """
+        ...
+
+
+# =============================================================================
+# Abstract Base Classes
+# =============================================================================
+
+class BaseDrafter(ABC):
+    """
+    Abstract base class for Drafter agents.
+    
+    The Drafter handles team selection and swap decisions. It uses a
+    unified __call__ method that the controller invokes for both phases.
+    
+    Implementations should:
+    - Handle both draft and swap observations
+    - Return appropriate action shapes for each phase
+    - Optionally track history for analysis
+    """
+    
+    @abstractmethod
+    def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
+        """
+        Main policy interface called by controller.
+        
+        Args:
+            obs: Phase-specific observation array
+            phase: Current game phase
+            
+        Returns:
+            Action array appropriate for the phase
         """
         pass
     
@@ -56,33 +118,25 @@ class BaseDrafter(ABC):
             rental_obs: Observation of 6 rental Pokemon features
             
         Returns:
-            Array of 3 unique indices [0-5] representing selections
+            Array of 3 unique indices [0-5]
         """
         pass
     
     @abstractmethod
     def decide_swap(self, swap_obs: np.ndarray) -> int:
         """
-        Decide whether to swap a team member after winning.
+        Decide whether to swap a team member.
         
         Args:
-            swap_obs: Observation of current team + swap candidate
+            swap_obs: Observation of team + candidate
             
         Returns:
-            Swap action:
-                0 = Keep current team (no swap)
-                1 = Swap slot 1 with candidate
-                2 = Swap slot 2 with candidate
-                3 = Swap slot 3 with candidate
+            0 = keep team, 1-3 = swap slot N
         """
         pass
     
     def reset(self) -> None:
-        """
-        Reset any internal state for a new run.
-        
-        Override if the drafter maintains state across decisions.
-        """
+        """Reset internal state for a new run."""
         pass
 
 
@@ -91,38 +145,29 @@ class BaseTactician(ABC):
     Abstract base class for Tactician agents.
     
     The Tactician makes turn-by-turn battle decisions:
-    - Select moves (actions 0-3)
-    - Switch Pokemon (actions 4-5)
+    - Actions 0-3: Use moves 1-4
+    - Actions 4-5: Switch to bench Pokemon 1-2
     
-    Uses recurrent architecture (LSTM) to remember battle history,
-    so the interface includes hidden state management.
+    For recurrent agents (LSTM), hidden state is managed internally.
     """
     
     @abstractmethod
     def __call__(
-        self, 
-        obs: np.ndarray, 
-        hidden_state: Any,
+        self,
+        obs: np.ndarray,
+        phase: GamePhase,
         action_mask: np.ndarray,
-    ) -> Tuple[int, Any]:
+    ) -> int:
         """
-        Main policy interface called by BattleFactorySystem.
+        Main policy interface called by controller.
         
         Args:
-            obs: Battle observation array containing:
-                - Player active Pokemon features
-                - Enemy active Pokemon features  
-                - Battle context (weather, turn, streak)
-            hidden_state: LSTM hidden state from previous step
-                (None on first turn of battle)
-            action_mask: Binary mask of shape (6,) indicating valid actions
-                [Move1, Move2, Move3, Move4, Switch1, Switch2]
-                1.0 = valid, 0.0 = invalid
-                
+            obs: Battle observation array
+            phase: Current game phase
+            action_mask: Binary mask of valid actions
+            
         Returns:
-            Tuple of (action, new_hidden_state):
-                - action: Integer 0-5 representing the chosen action
-                - new_hidden_state: Updated LSTM hidden state
+            Action index 0-5
         """
         pass
     
@@ -130,59 +175,52 @@ class BaseTactician(ABC):
     def select_action(
         self,
         obs: np.ndarray,
-        hidden_state: Any,
         action_mask: np.ndarray,
-    ) -> Tuple[int, Any]:
+    ) -> int:
         """
-        Select a battle action given the current state.
-        
-        This is the core decision method. The __call__ method
-        typically just delegates to this.
+        Select a battle action.
         
         Args:
-            obs: Battle observation array
-            hidden_state: LSTM hidden state
+            obs: Battle observation
             action_mask: Valid action mask
             
         Returns:
-            Tuple of (action, new_hidden_state)
+            Action index 0-5
         """
         pass
     
     @abstractmethod
     def get_initial_hidden_state(self) -> Any:
-        """
-        Get the initial hidden state for a new battle.
-        
-        Returns:
-            Initial LSTM hidden state (typically zeros)
-        """
+        """Get initial hidden state for new battle."""
         pass
     
-    def reset(self) -> Any:
-        """
-        Reset for a new battle and return initial hidden state.
-        
-        Returns:
-            Initial hidden state for the new battle
-        """
-        return self.get_initial_hidden_state()
+    def reset(self) -> None:
+        """Reset for new battle."""
+        pass
+    
+    def reset_run(self) -> None:
+        """Reset for completely new run."""
+        self.reset()
 
+
+# =============================================================================
+# Configuration
+# =============================================================================
 
 class AgentConfig:
     """
-    Configuration container for agent hyperparameters.
+    Configuration for agent hyperparameters.
     
     Provides a unified way to configure both random and trained agents.
     """
     
     def __init__(
         self,
-        # Tactician config
+        # Tactician (LSTM) config
         lstm_hidden_size: int = 256,
         lstm_num_layers: int = 2,
         
-        # Drafter config  
+        # Drafter (Transformer) config
         transformer_heads: int = 4,
         transformer_layers: int = 2,
         
@@ -192,6 +230,10 @@ class AgentConfig:
         # Random agent config
         random_seed: Optional[int] = None,
         exploration_epsilon: float = 0.0,
+        
+        # Behavior config
+        swap_probability: float = 0.3,
+        move_bias: float = 0.7,
     ):
         self.lstm_hidden_size = lstm_hidden_size
         self.lstm_num_layers = lstm_num_layers
@@ -200,4 +242,19 @@ class AgentConfig:
         self.embed_dim = embed_dim
         self.random_seed = random_seed
         self.exploration_epsilon = exploration_epsilon
-
+        self.swap_probability = swap_probability
+        self.move_bias = move_bias
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "lstm_hidden_size": self.lstm_hidden_size,
+            "lstm_num_layers": self.lstm_num_layers,
+            "transformer_heads": self.transformer_heads,
+            "transformer_layers": self.transformer_layers,
+            "embed_dim": self.embed_dim,
+            "random_seed": self.random_seed,
+            "exploration_epsilon": self.exploration_epsilon,
+            "swap_probability": self.swap_probability,
+            "move_bias": self.move_bias,
+        }

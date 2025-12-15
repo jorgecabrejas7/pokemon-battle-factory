@@ -8,6 +8,8 @@ This script provides multiple ways to run the Battle Factory:
 3. Phase-level stepping (draft, battle, swap)
 4. Turn-level stepping (individual battle turns)
 
+Uses the new modular controller architecture for consistent behavior.
+
 Prerequisites:
 1. mGBA running with Pokemon Emerald ROM loaded
 2. connector.lua script loaded in mGBA (Tools -> Scripting -> Load)
@@ -27,22 +29,34 @@ Usage:
     python scripts/run_random.py --test-connection
 """
 
+from __future__ import annotations
+
 import sys
 import os
 import argparse
 import logging
 import time
 from pathlib import Path
+from typing import Optional, Callable, List
+
+import numpy as np
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.game_controller import GameController, GameState, PhaseResult, TurnResult
-from src.agents import (
-    RandomDrafter, RandomTactician, create_random_agents,
-    InteractiveDrafter, InteractiveTactician, create_interactive_agents,
+from src.controller import (
+    TrainingController,
+    PhaseResult,
+    TurnResult,
+    EpisodeResult,
+    Button,
+    TITLE_TO_CONTINUE,
+    DISMISS_DIALOG,
+    INIT_FACTORY_CHALLENGE,
 )
+from src.core.enums import GamePhase, BattleOutcome
+from src.config import config
 
 # Configure logging
 logging.basicConfig(
@@ -53,55 +67,154 @@ logger = logging.getLogger("BattleFactoryRunner")
 
 
 # =============================================================================
-# Agent Wrappers
+# Agent Implementations
 # =============================================================================
 
-def wrap_drafter_for_controller(drafter):
-    """
-    Wrap a drafter agent to match GameController's expected signature.
+class RandomDrafter:
+    """Random drafter that selects Pokemon randomly."""
     
-    Controller expects: (obs, state) -> action
-    Our agents expect: (obs) -> action
-    """
-    def wrapped(obs, state):
-        return drafter(obs)
-    return wrapped
+    def __init__(self, seed: Optional[int] = None, verbose: bool = False):
+        self.rng = np.random.default_rng(seed)
+        self.verbose = verbose
+    
+    def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
+        """Select action based on phase."""
+        if phase == GamePhase.DRAFT_SCREEN:
+            # Select 3 unique Pokemon from 6
+            choices = self.rng.choice(6, size=3, replace=False)
+            if self.verbose:
+                print(f"  [Drafter] Selecting indices: {list(choices)}")
+            return choices
+        elif phase == GamePhase.SWAP_SCREEN:
+            # 30% chance to swap, preferring not to
+            action = self.rng.choice([0, 1, 2, 3], p=[0.7, 0.1, 0.1, 0.1])
+            if self.verbose:
+                action_str = "keep team" if action == 0 else f"swap slot {action}"
+                print(f"  [Drafter] Swap decision: {action_str}")
+            return np.array([action])
+        return np.array([0])
 
 
-def wrap_tactician_for_controller(tactician):
-    """
-    Wrap a tactician agent to match GameController's expected signature.
+class RandomTactician:
+    """Random tactician that selects valid moves randomly."""
     
-    Controller expects: (obs, state, mask) -> action
-    Our agents expect: (obs, hidden, mask) -> (action, hidden)
-    """
-    hidden_state = [None]  # Mutable container for hidden state
+    def __init__(self, seed: Optional[int] = None, verbose: bool = False):
+        self.rng = np.random.default_rng(seed)
+        self.verbose = verbose
     
-    def wrapped(obs, state, mask):
-        action, new_hidden = tactician(obs, hidden_state[0], mask)
-        hidden_state[0] = new_hidden
+    def __call__(
+        self,
+        obs: np.ndarray,
+        phase: GamePhase,
+        mask: np.ndarray
+    ) -> int:
+        """Select random valid action."""
+        valid_actions = np.where(mask > 0)[0]
+        if len(valid_actions) == 0:
+            action = 0  # Default to first move
+        else:
+            action = int(self.rng.choice(valid_actions))
+        
+        if self.verbose:
+            action_names = ["Move1", "Move2", "Move3", "Move4", "Switch1", "Switch2"]
+            print(f"  [Tactician] Action: {action_names[action]}")
+        
         return action
-    return wrapped
+
+
+class InteractiveDrafter:
+    """Interactive drafter that prompts user for input."""
+    
+    def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
+        if phase == GamePhase.DRAFT_SCREEN:
+            print("\n=== DRAFT SELECTION ===")
+            print("Select 3 Pokemon (indices 0-5)")
+            selections = []
+            for i in range(3):
+                while True:
+                    try:
+                        idx = int(input(f"  Pokemon {i+1}: "))
+                        if 0 <= idx <= 5 and idx not in selections:
+                            selections.append(idx)
+                            break
+                        print("  Invalid or duplicate selection")
+                    except ValueError:
+                        print("  Enter a number 0-5")
+            return np.array(selections)
+        
+        elif phase == GamePhase.SWAP_SCREEN:
+            print("\n=== SWAP DECISION ===")
+            print("0: Keep team, 1-3: Swap slot")
+            while True:
+                try:
+                    action = int(input("  Decision: "))
+                    if 0 <= action <= 3:
+                        return np.array([action])
+                    print("  Invalid choice")
+                except ValueError:
+                    print("  Enter a number 0-3")
+        
+        return np.array([0])
+
+
+class InteractiveTactician:
+    """Interactive tactician that prompts user for input."""
+    
+    def __call__(
+        self,
+        obs: np.ndarray,
+        phase: GamePhase,
+        mask: np.ndarray
+    ) -> int:
+        print("\n=== BATTLE TURN ===")
+        action_names = ["Move1", "Move2", "Move3", "Move4", "Switch1", "Switch2"]
+        
+        print("Valid actions:")
+        for i, name in enumerate(action_names):
+            valid = "✓" if mask[i] > 0 else "✗"
+            print(f"  [{i}] {name} {valid}")
+        
+        while True:
+            try:
+                action = int(input("  Action: "))
+                if 0 <= action <= 5 and mask[action] > 0:
+                    return action
+                print("  Invalid or masked action")
+            except ValueError:
+                print("  Enter a number 0-5")
+
+
+def create_random_agents(
+    seed: Optional[int] = None,
+    verbose: bool = False
+) -> tuple[RandomDrafter, RandomTactician]:
+    """Create random agent pair."""
+    return RandomDrafter(seed, verbose), RandomTactician(seed, verbose)
+
+
+def create_interactive_agents() -> tuple[InteractiveDrafter, InteractiveTactician]:
+    """Create interactive agent pair."""
+    return InteractiveDrafter(), InteractiveTactician()
 
 
 # =============================================================================
-# Automatic Episode Runner
+# Episode Execution
 # =============================================================================
 
 def run_automatic_episodes(
-    controller: GameController,
-    drafter,
-    tactician,
+    controller: TrainingController,
+    drafter: Callable,
+    tactician: Callable,
     num_episodes: int = 1,
     initialize: bool = True,
-) -> list:
+) -> List[EpisodeResult]:
     """
     Run automatic episodes with the given agents.
     
     Args:
-        controller: GameController instance
-        drafter: Drafter agent
-        tactician: Tactician agent  
+        controller: TrainingController instance
+        drafter: Drafter agent callable
+        tactician: Tactician agent callable
         num_episodes: Number of episodes to run
         initialize: Whether to auto-initialize to draft screen
         
@@ -110,24 +223,20 @@ def run_automatic_episodes(
     """
     results = []
     
-    # Wrap agents for controller interface
-    drafter_fn = wrap_drafter_for_controller(drafter)
-    tactician_fn = wrap_tactician_for_controller(tactician)
-    
     for i in range(num_episodes):
         logger.info(f"\n{'='*60}")
         logger.info(f"Episode {i + 1}/{num_episodes}")
         logger.info(f"{'='*60}")
         
         # Initialize if needed
-        if initialize and controller.state != GameState.DRAFT_SCREEN:
+        if initialize and controller.phase != GamePhase.DRAFT_SCREEN:
             logger.info("Initializing to draft screen...")
             if not controller.initialize_to_draft():
                 logger.error("Failed to initialize")
                 continue
         
         # Run episode
-        result = controller.run_episode(drafter_fn, tactician_fn)
+        result = controller.run_episode(drafter, tactician)
         results.append(result)
         
         # Log result
@@ -165,7 +274,7 @@ def run_automatic_episodes(
 # Interactive Mode
 # =============================================================================
 
-def run_interactive_mode(controller: GameController):
+def run_interactive_mode(controller: TrainingController):
     """
     Run in fully interactive mode with command prompt.
     
@@ -212,8 +321,8 @@ def run_interactive_mode(controller: GameController):
     while True:
         try:
             # Show current state in prompt
-            state_name = controller.state.name if controller.is_connected else "DISCONNECTED"
-            cmd = input(f"[{state_name}]> ").strip().lower()
+            phase_name = controller.phase.name if controller.is_connected else "DISCONNECTED"
+            cmd = input(f"[{phase_name}]> ").strip().lower()
             
             if not cmd:
                 continue
@@ -234,57 +343,49 @@ def run_interactive_mode(controller: GameController):
             
             elif action == 'step1':
                 print("Step 1: Loading title screen (A x2)...")
-                from src.navigation import NavigationSequence
-                nav = NavigationSequence(controller)
-                nav.load_title_screen()
+                controller.input.execute_sequence(TITLE_TO_CONTINUE)
                 print("✓ Step 1 complete")
             
             elif action == 'step2':
                 print("Step 2: Talk to NPC (B x3)...")
-                from src.navigation import NavigationSequence
-                nav = NavigationSequence(controller)
-                nav.talk_to_npc()
+                controller.input.execute_sequence(DISMISS_DIALOG)
                 print("✓ Step 2 complete")
             
             elif action == 'step3':
                 print("Step 3: Init Battle Factory (A5, Down, A4, Wait, A, B10)...")
-                from src.navigation import NavigationSequence
-                nav = NavigationSequence(controller)
-                nav.init_battle_factory()
-                controller._state = GameState.DRAFT_SCREEN
+                controller.input.execute_sequence(INIT_FACTORY_CHALLENGE)
+                controller.transition_to(GamePhase.DRAFT_SCREEN, force=True)
                 print("✓ Step 3 complete - should be at draft screen")
             
             elif action == 'detect':
-                state = controller._detect_current_state()
-                print(f"Detected state: {state.name}")
+                phase = controller.detect_phase()
+                print(f"Detected phase: {phase.name}")
+                controller.transition_to(phase, force=True)
             
             # === Phase Steps ===
             elif action == 'draft':
                 agent = interactive_drafter if 'i' in args else random_drafter
-                drafter_fn = wrap_drafter_for_controller(agent)
-                result = controller.step_draft(drafter_fn)
-                print(f"Draft result: {result.success}, next: {result.next_state.name}")
+                result = controller.step_draft(agent)
+                print(f"Draft result: {result.success}, next: {result.next_phase.name}")
                 if result.data:
                     print(f"  Data: {result.data}")
             
             elif action == 'battle':
                 agent = interactive_tactician if 'i' in args else random_tactician
-                tactician_fn = wrap_tactician_for_controller(agent)
-                result = controller.step_battle(tactician_fn)
-                print(f"Battle result: {result.success}, next: {result.next_state.name}")
+                result = controller.step_battle(agent)
+                print(f"Battle result: {result.success}, next: {result.next_phase.name}")
                 if result.data:
                     print(f"  Data: {result.data}")
             
             elif action == 'swap':
                 agent = interactive_drafter if 'i' in args else random_drafter
-                drafter_fn = wrap_drafter_for_controller(agent)
-                result = controller.step_swap(drafter_fn)
-                print(f"Swap result: {result.success}, next: {result.next_state.name}")
+                result = controller.step_swap(agent)
+                print(f"Swap result: {result.success}, next: {result.next_phase.name}")
             
             elif action == 'turn':
                 if not args:
                     # Show options and prompt
-                    mask = controller.get_valid_actions()
+                    mask = controller.get_action_mask()
                     print("Valid actions:")
                     actions = ["Move1", "Move2", "Move3", "Move4", "Switch1", "Switch2"]
                     for i, name in enumerate(actions):
@@ -301,20 +402,25 @@ def run_interactive_mode(controller: GameController):
             
             # === State Inspection ===
             elif action == 'state':
-                print(f"State: {controller.state.name}")
+                print(f"Phase: {controller.phase.name}")
                 print(f"Connected: {controller.is_connected}")
-                print(f"Win Streak: {controller.win_streak}")
-                print(f"Current Battle: {controller.current_battle}")
-                print(f"Current Turn: {controller.current_turn}")
+                print(f"Win Streak: {controller.run_stats.win_streak}")
+                print(f"Current Battle: {controller.run_stats.current_battle}")
+                print(f"Total Turns: {controller.run_stats.total_turns}")
             
             elif action == 'obs':
-                obs = controller.get_observation()
-                print("Observation:")
-                for key, value in obs.items():
-                    print(f"  {key}: {value}")
+                phase = controller.phase
+                if phase == GamePhase.DRAFT_SCREEN:
+                    obs = controller.get_draft_observation()
+                    print(f"Draft observation ({len(obs)} dims): {obs[:10]}...")
+                elif phase.is_battle_phase:
+                    obs = controller.get_battle_observation()
+                    print(f"Battle observation ({len(obs)} dims): {obs[:10]}...")
+                else:
+                    print(f"No observation available in phase: {phase.name}")
             
             elif action == 'valid':
-                mask = controller.get_valid_actions()
+                mask = controller.get_action_mask()
                 actions = ["Move1", "Move2", "Move3", "Move4", "Switch1", "Switch2"]
                 print("Valid actions:")
                 for i, name in enumerate(actions):
@@ -323,29 +429,29 @@ def run_interactive_mode(controller: GameController):
             
             # === Button Presses ===
             elif action == 'a':
-                controller.press_a()
+                controller.input.press_a()
                 print("Pressed A")
             elif action == 'b':
-                controller.press_b()
+                controller.input.press_b()
                 print("Pressed B")
             elif action == 'up':
-                controller.press_up()
+                controller.input.press_up()
                 print("Pressed Up")
             elif action == 'down':
-                controller.press_down()
+                controller.input.press_down()
                 print("Pressed Down")
             elif action == 'left':
-                controller.press_left()
+                controller.input.press_left()
                 print("Pressed Left")
             elif action == 'right':
-                controller.press_right()
+                controller.input.press_right()
                 print("Pressed Right")
             elif action == 'start':
-                controller.press_start()
+                controller.input.press_start()
                 print("Pressed Start")
             elif action == 'wait':
                 frames = int(args[0]) if args else 60
-                controller.wait(frames)
+                controller.input.wait_frames(frames)
                 print(f"Waited {frames} frames")
             
             # === Full Episodes ===
@@ -375,7 +481,7 @@ def run_interactive_mode(controller: GameController):
 # Step Mode (Phase-by-phase with confirmations)
 # =============================================================================
 
-def run_step_mode(controller: GameController):
+def run_step_mode(controller: TrainingController):
     """
     Run with step-by-step confirmation at each phase.
     
@@ -407,32 +513,30 @@ def run_step_mode(controller: GameController):
     if not confirm("\nReady to run draft phase (random)?"):
         return
     
-    drafter_fn = wrap_drafter_for_controller(random_drafter)
-    result = controller.step_draft(drafter_fn)
+    result = controller.step_draft(random_drafter)
     print(f"Draft complete: {result.data}")
     
     # Battle loop
     battle_num = 0
-    while controller.state != GameState.RUN_COMPLETE:
+    while controller.phase != GamePhase.RUN_COMPLETE:
         battle_num += 1
         
         if not confirm(f"\nReady for battle {battle_num}?"):
             break
         
-        tactician_fn = wrap_tactician_for_controller(random_tactician)
-        result = controller.step_battle(tactician_fn)
+        result = controller.step_battle(random_tactician)
         print(f"Battle complete: {result.data}")
         
         # Swap if applicable
-        if controller.state == GameState.SWAP_SCREEN:
+        if controller.phase == GamePhase.SWAP_SCREEN:
             if not confirm("\nSwap screen - ready to make swap decision?"):
                 break
             
-            result = controller.step_swap(drafter_fn)
+            result = controller.step_swap(random_drafter)
             print(f"Swap complete: {result.data}")
     
     print(f"\n{'='*60}")
-    print(f"Run complete! Final streak: {controller.win_streak}")
+    print(f"Run complete! Final streak: {controller.run_stats.win_streak}")
     print(f"{'='*60}")
 
 
@@ -440,13 +544,15 @@ def run_step_mode(controller: GameController):
 # Connection Test
 # =============================================================================
 
-def test_connection(controller: GameController) -> bool:
+def test_connection(controller: TrainingController) -> bool:
     """
     Test connection to emulator.
     """
     print("Testing connection to emulator...")
     
     try:
+        backend = controller.backend
+        
         # Basic commands
         tests = [
             ("PING", "PONG"),
@@ -454,7 +560,7 @@ def test_connection(controller: GameController) -> bool:
         ]
         
         for cmd, expected in tests:
-            response = controller.backend._send_command(cmd)
+            response = backend._send_command(cmd)
             if expected and response != expected:
                 print(f"  {cmd}: FAIL (got '{response}', expected '{expected}')")
                 return False
@@ -463,18 +569,18 @@ def test_connection(controller: GameController) -> bool:
         # Memory commands
         print("\nTesting memory commands...")
         
-        waiting = controller.backend._send_command("IS_WAITING_INPUT")
+        waiting = backend.is_waiting_for_input()
         print(f"  IS_WAITING_INPUT: {waiting}")
         
-        outcome = controller.backend._send_command("GET_BATTLE_OUTCOME")
-        print(f"  GET_BATTLE_OUTCOME: {outcome}")
+        outcome = backend.get_battle_outcome()
+        print(f"  GET_BATTLE_OUTCOME: {outcome.name}")
         
         # Try reading rental mons
-        rentals = controller.backend.memory.read_rental_mons()
+        rentals = backend.memory.read_rental_mons()
         print(f"  Rental mons found: {len(rentals)}")
         
         # Try reading battle state
-        battle_mons = controller.backend.memory.read_battle_mons()
+        battle_mons = backend.memory.read_battle_mons()
         print(f"  Battle mons found: {len(battle_mons)}")
         
         print("\n✓ Connection test passed!")
@@ -531,14 +637,14 @@ def main():
     parser.add_argument(
         "--host",
         type=str,
-        default="127.0.0.1",
-        help="Emulator host (default: 127.0.0.1)",
+        default=config.network.host,
+        help=f"Emulator host (default: {config.network.host})",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=7777,
-        help="Emulator port (default: 7777)",
+        default=config.network.port,
+        help=f"Emulator port (default: {config.network.port})",
     )
     parser.add_argument(
         "--no-init",
@@ -553,9 +659,10 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
     
     # Create controller
-    controller = GameController(verbose=args.verbose)
+    controller = TrainingController(verbose=args.verbose)
     
     # Connect
+    print(f"\nConnecting to emulator at {args.host}:{args.port}...")
     if not controller.connect(args.host, args.port):
         print("\nFailed to connect to emulator!")
         print("Make sure:")
@@ -563,6 +670,8 @@ def main():
         print("  2. connector.lua is loaded (Tools -> Scripting -> Load)")
         print("  3. The game is NOT paused")
         sys.exit(1)
+    
+    print("✓ Connected")
     
     try:
         # Test connection mode

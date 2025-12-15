@@ -7,7 +7,12 @@ Provides RLlib-compatible environments for:
 3. BattleFactoryEnv: Unified hierarchical environment
 
 Uses Gymnasium (not old gym) for RLlib 2.x compatibility.
+
+All environments use the new modular controller architecture for
+consistent behavior and proper state management.
 """
+
+from __future__ import annotations
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -16,9 +21,10 @@ from typing import Tuple, Dict, Any, Optional, List
 import logging
 
 from .backends.emerald.backend import EmeraldBackend
-from .core.enums import BattleOutcome
+from .controller import TrainingController, PhaseResult, TurnResult
+from .core.enums import GamePhase, BattleOutcome
 from .core.dataclasses import BattleState, FactoryState
-from .system import BattleFactorySystem, GamePhase
+from .config import config
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +34,22 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 # Battle observation features (for Tactician)
-BATTLE_OBS_DIM = 64  # Flattened battle state
-BATTLE_NUM_ACTIONS = 6  # Move 1-4, Switch 1-2
+BATTLE_OBS_DIM = config.dimensions.battle_obs_dim
+BATTLE_NUM_ACTIONS = config.dimensions.battle_num_actions  # Move 1-4, Switch 1-2
 
 # Draft observation features (for Drafter)
-DRAFT_OBS_DIM = 128  # Rental candidates + context
-DRAFT_NUM_ACTIONS = 6  # Select from 6 candidates
+DRAFT_OBS_DIM = config.dimensions.draft_obs_dim
+DRAFT_NUM_CANDIDATES = config.dimensions.draft_num_candidates
+DRAFT_TEAM_SIZE = config.dimensions.draft_team_size
 
 # Swap observation features
-SWAP_OBS_DIM = 64
-SWAP_NUM_ACTIONS = 4  # Keep or swap 1-3
+SWAP_OBS_DIM = config.dimensions.swap_obs_dim
+SWAP_NUM_ACTIONS = config.dimensions.swap_num_actions
 
+
+# =============================================================================
+# Tactician Environment
+# =============================================================================
 
 class TacticianEnv(gym.Env):
     """
@@ -50,25 +61,42 @@ class TacticianEnv(gym.Env):
     - Shaped rewards for damage/faints
     
     Compatible with RLlib's RecurrentPPO.
+    
+    Observation Space:
+        Dict containing:
+        - "obs": Battle state features [BATTLE_OBS_DIM]
+        - "action_mask": Valid action mask [6]
+    
+    Action Space:
+        Discrete(6): Move 1-4, Switch 1-2
+    
+    Rewards:
+        - Per-turn: Damage dealt (+), damage taken (-)
+        - Win: +10 * (1 + streak * 0.1)
+        - Loss: -10 * (1 + streak * 0.2)
     """
     
     metadata = {"render_modes": ["human", "ansi"]}
     
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config_dict: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
-        config = config or {}
+        config_dict = config_dict or {}
         
-        # Backend connection
-        self.backend = config.get("backend") or EmeraldBackend()
-        self.system = config.get("system") or BattleFactorySystem(self.backend)
-        self.connected = False
+        # Backend/controller (can be injected for testing)
+        backend = config_dict.get("backend")
+        self.controller = config_dict.get("controller") or TrainingController(
+            backend=backend,
+            verbose=config_dict.get("verbose", False),
+        )
+        self._connected = False
         
         # Config
-        self.max_turns = config.get("max_turns", 100)
-        self.reward_scale = config.get("reward_scale", 1.0)
+        self.max_turns = config_dict.get("max_turns", config.game.max_streak * 20)
+        self.reward_scale = config_dict.get("reward_scale", 1.0)
+        self.auto_connect = config_dict.get("auto_connect", True)
         
         # Action space: Move 1-4, Switch 1-2
         self.action_space = spaces.Discrete(BATTLE_NUM_ACTIONS)
@@ -76,8 +104,8 @@ class TacticianEnv(gym.Env):
         # Observation space: Dict with features and action mask
         self.observation_space = spaces.Dict({
             "obs": spaces.Box(
-                low=-1.0, high=1.0, 
-                shape=(BATTLE_OBS_DIM,), 
+                low=-1.0, high=1.0,
+                shape=(BATTLE_OBS_DIM,),
                 dtype=np.float32
             ),
             "action_mask": spaces.Box(
@@ -91,19 +119,19 @@ class TacticianEnv(gym.Env):
         self.current_turn = 0
         self.episode_reward = 0.0
         self._last_obs = None
-        
-    def _ensure_connected(self):
-        """Ensure backend is connected."""
-        if not self.connected:
+    
+    def _ensure_connected(self) -> None:
+        """Ensure controller is connected."""
+        if not self._connected and self.auto_connect:
             try:
-                self.system.connect()
-                self.connected = True
+                self.controller.connect()
+                self._connected = True
             except Exception as e:
-                logger.warning(f"Backend connection failed: {e}")
+                logger.warning(f"Auto-connect failed: {e}")
     
     def _get_observation(self) -> Dict[str, np.ndarray]:
         """Build observation dict with action mask."""
-        obs_vec = self.system.get_battle_observation()
+        obs_vec = self.controller.get_battle_observation()
         
         # Pad/truncate to fixed size
         if len(obs_vec) < BATTLE_OBS_DIM:
@@ -111,7 +139,7 @@ class TacticianEnv(gym.Env):
         else:
             obs_vec = obs_vec[:BATTLE_OBS_DIM]
         
-        action_mask = self.system.get_action_mask()
+        action_mask = self.controller.get_action_mask()
         
         return {
             "obs": obs_vec.astype(np.float32),
@@ -119,49 +147,58 @@ class TacticianEnv(gym.Env):
         }
     
     def reset(
-        self, 
-        *, 
-        seed: Optional[int] = None, 
+        self,
+        *,
+        seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         """Reset for a new battle."""
         super().reset(seed=seed)
         
         self._ensure_connected()
-        self.system.reset_battle()
+        self.controller.reset_battle()
         
         self.current_turn = 0
         self.episode_reward = 0.0
+        
+        # Wait for battle to start if needed
+        if self.controller.phase == GamePhase.BATTLE_READY:
+            self.controller.wait_for_battle_start()
         
         obs = self._get_observation()
         self._last_obs = obs
         
         info = {
             "turn": self.current_turn,
-            "streak": self.system.current_streak,
+            "streak": self.controller.run_stats.win_streak,
+            "phase": self.controller.phase.name,
         }
         
         return obs, info
     
     def step(
-        self, 
+        self,
         action: int,
     ) -> Tuple[Dict[str, np.ndarray], float, bool, bool, Dict[str, Any]]:
         """
         Execute battle action.
         
-        Returns (obs, reward, terminated, truncated, info)
+        Args:
+            action: Action index (0-5)
+            
+        Returns:
+            (obs, reward, terminated, truncated, info)
         """
-        # Execute action
-        reward, done = self.system.execute_battle_action(action)
-        reward *= self.reward_scale
+        # Execute action using controller
+        result = self.controller.step_turn(action)
+        reward = result.reward * self.reward_scale
         
         self.current_turn += 1
         self.episode_reward += reward
         
         # Check truncation (max turns)
         truncated = self.current_turn >= self.max_turns
-        terminated = done
+        terminated = result.battle_ended
         
         # Get new observation
         obs = self._get_observation()
@@ -169,27 +206,35 @@ class TacticianEnv(gym.Env):
         
         info = {
             "turn": self.current_turn,
-            "streak": self.system.current_streak,
+            "streak": self.controller.run_stats.win_streak,
             "episode_reward": self.episode_reward,
-            "battle_outcome": self.system._get_battle_outcome().name,
+            "battle_outcome": result.outcome.name if result.outcome else "ONGOING",
+            "action_taken": result.action,
+            "damage_dealt": result.data.get("damage_dealt", 0),
+            "damage_taken": result.data.get("damage_taken", 0),
         }
         
         return obs, reward, terminated, truncated, info
     
-    def render(self):
+    def render(self) -> None:
         """Render current state."""
         if self._last_obs is not None:
-            state = self.system._last_battle_state
-            if state:
-                logger.info(f"Turn {self.current_turn} | "
-                           f"Player: {state.active_pokemon.species_id if state.active_pokemon else 'N/A'} | "
-                           f"Enemy: {state.enemy_active_pokemon.species_id if state.enemy_active_pokemon else 'N/A'}")
+            logger.info(
+                f"Turn {self.current_turn} | "
+                f"Streak {self.controller.run_stats.win_streak} | "
+                f"Phase {self.controller.phase.name}"
+            )
     
-    def close(self):
+    def close(self) -> None:
         """Clean up resources."""
-        if hasattr(self.backend, 'sock') and self.backend.sock:
-            self.backend.sock.close()
+        if self._connected:
+            self.controller.disconnect()
+            self._connected = False
 
+
+# =============================================================================
+# Drafter Environment
+# =============================================================================
 
 class DrafterEnv(gym.Env):
     """
@@ -199,36 +244,51 @@ class DrafterEnv(gym.Env):
     - Initial team selection (3 from 6)
     - Post-battle swaps
     
-    Uses multi-discrete action space for selecting multiple Pokemon.
+    Observation Space:
+        Dict containing:
+        - "obs": Rental/team features [DRAFT_OBS_DIM or SWAP_OBS_DIM]
+        - "action_mask": Valid selection mask [6 or 4]
+    
+    Action Space:
+        - Draft mode: MultiDiscrete([6, 6, 6]) for selecting 3 Pokemon
+        - Swap mode: Discrete(4) for keep/swap decision
+    
+    Rewards:
+        Delayed - based on subsequent battle outcomes
     """
     
     metadata = {"render_modes": ["human", "ansi"]}
     
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config_dict: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
-        config = config or {}
+        config_dict = config_dict or {}
         
-        # Backend connection
-        self.backend = config.get("backend") or EmeraldBackend()
-        self.system = config.get("system") or BattleFactorySystem(self.backend)
-        self.connected = False
+        # Backend/controller
+        backend = config_dict.get("backend")
+        self.controller = config_dict.get("controller") or TrainingController(
+            backend=backend,
+            verbose=config_dict.get("verbose", False),
+        )
+        self._connected = False
         
         # Mode: "draft" or "swap"
-        self.mode = config.get("mode", "draft")
+        self.mode = config_dict.get("mode", "draft")
+        self.auto_connect = config_dict.get("auto_connect", True)
         
         # Action space depends on mode
         if self.mode == "draft":
-            # Select 3 Pokemon from 6 (simplified to single selection for now)
             self.action_space = spaces.MultiDiscrete([6, 6, 6])
+            obs_dim = DRAFT_OBS_DIM
+            mask_size = 6
         else:
-            # Swap: 0=keep, 1-3=swap with candidate
             self.action_space = spaces.Discrete(SWAP_NUM_ACTIONS)
+            obs_dim = SWAP_OBS_DIM
+            mask_size = SWAP_NUM_ACTIONS
         
         # Observation space
-        obs_dim = DRAFT_OBS_DIM if self.mode == "draft" else SWAP_OBS_DIM
         self.observation_space = spaces.Dict({
             "obs": spaces.Box(
                 low=-1.0, high=1.0,
@@ -237,30 +297,32 @@ class DrafterEnv(gym.Env):
             ),
             "action_mask": spaces.Box(
                 low=0.0, high=1.0,
-                shape=(6,) if self.mode == "draft" else (SWAP_NUM_ACTIONS,),
+                shape=(mask_size,),
                 dtype=np.float32,
             ),
         })
         
         self._last_obs = None
-        
-    def _ensure_connected(self):
-        """Ensure backend is connected."""
-        if not self.connected:
+    
+    def _ensure_connected(self) -> None:
+        """Ensure controller is connected."""
+        if not self._connected and self.auto_connect:
             try:
-                self.system.connect()
-                self.connected = True
+                self.controller.connect()
+                self._connected = True
             except Exception as e:
-                logger.warning(f"Backend connection failed: {e}")
+                logger.warning(f"Auto-connect failed: {e}")
     
     def _get_observation(self) -> Dict[str, np.ndarray]:
         """Get observation based on mode."""
         if self.mode == "draft":
-            obs_vec = self.system.get_draft_observation()
+            obs_vec = self.controller.get_draft_observation()
             obs_dim = DRAFT_OBS_DIM
+            mask_size = 6
         else:
-            obs_vec = self.system.get_swap_observation()
+            obs_vec = self.controller.get_swap_observation()
             obs_dim = SWAP_OBS_DIM
+            mask_size = SWAP_NUM_ACTIONS
         
         # Pad/truncate
         if len(obs_vec) < obs_dim:
@@ -268,8 +330,7 @@ class DrafterEnv(gym.Env):
         else:
             obs_vec = obs_vec[:obs_dim]
         
-        # Action mask (all valid for now)
-        mask_size = 6 if self.mode == "draft" else SWAP_NUM_ACTIONS
+        # Action mask (all valid for draft/swap)
         action_mask = np.ones(mask_size, dtype=np.float32)
         
         return {
@@ -293,7 +354,8 @@ class DrafterEnv(gym.Env):
         
         info = {
             "mode": self.mode,
-            "streak": self.system.current_streak,
+            "streak": self.controller.run_stats.win_streak,
+            "phase": self.controller.phase.name,
         }
         
         return obs, info
@@ -304,14 +366,22 @@ class DrafterEnv(gym.Env):
     ) -> Tuple[Dict[str, np.ndarray], float, bool, bool, Dict[str, Any]]:
         """Execute draft/swap action."""
         if self.mode == "draft":
-            # Multi-discrete action
+            # Multi-discrete action for team selection
             action_array = np.array(action) if not isinstance(action, np.ndarray) else action
-            success = self.system.execute_draft(action_array)
-            # Drafter reward comes from battle outcomes (delayed)
-            reward = 0.0
+            
+            # Create a simple drafter callable
+            def drafter_fn(obs, phase):
+                return action_array
+            
+            result = self.controller.step_draft(drafter_fn)
+            reward = 0.0  # Drafter reward comes from battle outcomes
+            
         else:
             # Discrete swap action
-            success = self.system.execute_swap(int(action))
+            def drafter_fn(obs, phase):
+                return np.array([int(action)])
+            
+            result = self.controller.step_swap(drafter_fn)
             reward = 0.0
         
         obs = self._get_observation()
@@ -322,21 +392,32 @@ class DrafterEnv(gym.Env):
         truncated = False
         
         info = {
-            "success": success,
-            "streak": self.system.current_streak,
+            "success": result.success,
+            "streak": self.controller.run_stats.win_streak,
+            "phase": self.controller.phase.name,
+            "data": result.data,
         }
         
         return obs, reward, terminated, truncated, info
     
-    def render(self):
+    def render(self) -> None:
         """Render current state."""
-        logger.info(f"Mode: {self.mode} | Streak: {self.system.current_streak}")
+        logger.info(
+            f"Mode: {self.mode} | "
+            f"Streak: {self.controller.run_stats.win_streak} | "
+            f"Phase: {self.controller.phase.name}"
+        )
     
-    def close(self):
+    def close(self) -> None:
         """Clean up resources."""
-        if hasattr(self.backend, 'sock') and self.backend.sock:
-            self.backend.sock.close()
+        if self._connected:
+            self.controller.disconnect()
+            self._connected = False
 
+
+# =============================================================================
+# Unified Battle Factory Environment
+# =============================================================================
 
 class BattleFactoryEnv(gym.Env):
     """
@@ -347,32 +428,51 @@ class BattleFactoryEnv(gym.Env):
     2. Battle phase (Tactician agent)
     3. Post-battle (outcome + potential swap)
     
-    RLlib can use this with multi-agent configuration.
+    This environment handles the complete episode lifecycle and can be
+    used with RLlib's multi-agent configuration.
+    
+    Observation Space:
+        Dict containing:
+        - "phase": Current game phase index
+        - "battle_obs": Battle state features
+        - "draft_obs": Draft/rental features
+        - "action_mask": Valid action mask
+        - "streak": Normalized win streak
+    
+    Action Space:
+        Discrete(16):
+        - 0-5: Battle actions (Move 1-4, Switch 1-2)
+        - 6-11: Draft selections (select Pokemon 0-5)
+        - 12-15: Swap actions (keep, swap 1-3)
     """
     
     metadata = {"render_modes": ["human", "ansi"]}
     
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config_dict: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
-        config = config or {}
+        config_dict = config_dict or {}
         
-        # Backend
-        self.backend = config.get("backend") or EmeraldBackend()
-        self.system = BattleFactorySystem(self.backend)
-        self.connected = False
-        
-        # Phase tracking
-        self.phase = GamePhase.INITIALIZING
+        # Backend/controller
+        backend = config_dict.get("backend")
+        self.controller = config_dict.get("controller") or TrainingController(
+            backend=backend,
+            verbose=config_dict.get("verbose", False),
+        )
+        self._connected = False
         
         # Config
-        self.max_battles = config.get("max_battles", 42)
-        self.max_turns_per_battle = config.get("max_turns_per_battle", 100)
+        self.max_battles = config_dict.get("max_battles", config.game.max_streak)
+        self.max_turns_per_battle = config_dict.get(
+            "max_turns_per_battle", 
+            config.game.max_streak * 3
+        )
+        self.auto_connect = config_dict.get("auto_connect", True)
+        self.auto_initialize = config_dict.get("auto_initialize", True)
         
         # Combined observation space
-        # Includes phase indicator + phase-specific obs
         self.observation_space = spaces.Dict({
             "phase": spaces.Discrete(len(GamePhase)),
             "battle_obs": spaces.Box(-1.0, 1.0, (BATTLE_OBS_DIM,), np.float32),
@@ -381,38 +481,39 @@ class BattleFactoryEnv(gym.Env):
             "streak": spaces.Box(0.0, 1.0, (1,), np.float32),
         })
         
-        # Action space: union of all possible actions
-        # 0-5: Battle actions (Move 1-4, Switch 1-2)
-        # 6-11: Draft selections (select Pokemon 0-5)
-        # 12-15: Swap actions (keep, swap 1-3)
+        # Unified action space
+        # 0-5: Battle, 6-11: Draft, 12-15: Swap
         self.action_space = spaces.Discrete(16)
         
+        # State tracking
         self._episode_stats = {}
-        
-    def _ensure_connected(self):
-        """Ensure backend is connected."""
-        if not self.connected:
+        self._current_turn = 0
+        self._draft_selections = []
+    
+    def _ensure_connected(self) -> None:
+        """Ensure controller is connected."""
+        if not self._connected and self.auto_connect:
             try:
-                self.system.connect()
-                self.connected = True
+                self.controller.connect()
+                self._connected = True
             except Exception as e:
-                logger.warning(f"Backend connection failed: {e}")
+                logger.warning(f"Auto-connect failed: {e}")
     
     def _get_observation(self) -> Dict[str, np.ndarray]:
         """Get unified observation."""
-        # Phase indicator
-        phase_idx = list(GamePhase).index(self.phase)
+        phase = self.controller.phase
+        phase_idx = list(GamePhase).index(phase)
         
         # Get phase-specific observations
-        if self.phase in [GamePhase.BATTLE, GamePhase.POST_BATTLE]:
-            battle_obs = self.system.get_battle_observation()
-            action_mask = self.system.get_action_mask()
+        if phase.is_battle_phase:
+            battle_obs = self.controller.get_battle_observation()
+            action_mask = self.controller.get_action_mask()
         else:
             battle_obs = np.zeros(BATTLE_OBS_DIM, dtype=np.float32)
             action_mask = np.zeros(BATTLE_NUM_ACTIONS, dtype=np.float32)
         
-        if self.phase in [GamePhase.DRAFT, GamePhase.SWAP]:
-            draft_obs = self.system.get_draft_observation()
+        if phase.is_draft_phase:
+            draft_obs = self.controller.get_draft_observation()
         else:
             draft_obs = np.zeros(DRAFT_OBS_DIM, dtype=np.float32)
         
@@ -422,7 +523,10 @@ class BattleFactoryEnv(gym.Env):
         if len(draft_obs) < DRAFT_OBS_DIM:
             draft_obs = np.pad(draft_obs, (0, DRAFT_OBS_DIM - len(draft_obs)))
         
-        streak_norm = np.array([self.system.current_streak / 42.0], dtype=np.float32)
+        streak_norm = np.array(
+            [self.controller.run_stats.win_streak / config.game.max_streak],
+            dtype=np.float32
+        )
         
         return {
             "phase": np.array(phase_idx, dtype=np.int64),
@@ -442,8 +546,11 @@ class BattleFactoryEnv(gym.Env):
         super().reset(seed=seed)
         
         self._ensure_connected()
-        self.system.reset_run()
-        self.phase = GamePhase.DRAFT
+        self.controller.reset_run()
+        
+        # Initialize to draft screen if needed
+        if self.auto_initialize:
+            self.controller.initialize_to_draft()
         
         self._episode_stats = {
             "battles_won": 0,
@@ -451,12 +558,14 @@ class BattleFactoryEnv(gym.Env):
             "max_streak": 0,
             "total_turns": 0,
         }
+        self._current_turn = 0
+        self._draft_selections = []
         
         obs = self._get_observation()
         
         info = {
-            "phase": self.phase.name,
-            "streak": self.system.current_streak,
+            "phase": self.controller.phase.name,
+            "streak": self.controller.run_stats.win_streak,
         }
         
         return obs, info
@@ -469,102 +578,114 @@ class BattleFactoryEnv(gym.Env):
         Execute action based on current phase.
         
         Action mapping:
-        - 0-5: Battle actions (valid during BATTLE phase)
-        - 6-11: Draft/swap selections (valid during DRAFT/SWAP phase)
+        - 0-5: Battle actions (valid during battle phases)
+        - 6-11: Draft selections (valid during DRAFT_SCREEN)
+        - 12-15: Swap actions (valid during SWAP_SCREEN)
         """
         reward = 0.0
         terminated = False
         truncated = False
+        phase = self.controller.phase
         
-        if self.phase == GamePhase.DRAFT:
-            # Draft action: convert to multi-selection
-            # Simplified: action 6-11 maps to single selection
+        if phase == GamePhase.DRAFT_SCREEN:
+            # Draft action: collect selections
             if 6 <= action <= 11:
                 selection_idx = action - 6
-                # For simplicity, auto-select 3 starting from chosen index
-                selections = np.array([(selection_idx + i) % 6 for i in range(3)])
-                self.system.execute_draft(selections)
-                self.phase = GamePhase.PRE_BATTLE
+                self._draft_selections.append(selection_idx)
+                
+                # After 3 selections, execute draft
+                if len(self._draft_selections) >= 3:
+                    selections = np.array(self._draft_selections[:3])
+                    
+                    def drafter_fn(obs, ph):
+                        return selections
+                    
+                    self.controller.step_draft(drafter_fn)
+                    self._draft_selections = []
         
-        elif self.phase == GamePhase.BATTLE:
+        elif phase == GamePhase.BATTLE_READY:
+            # Wait for battle to start
+            self.controller.wait_for_battle_start()
+        
+        elif phase == GamePhase.IN_BATTLE:
             # Battle action
             if 0 <= action <= 5:
-                step_reward, done = self.system.execute_battle_action(action)
-                reward = step_reward
+                result = self.controller.step_turn(action)
+                reward = result.reward
+                self._current_turn += 1
                 self._episode_stats["total_turns"] += 1
                 
-                if done:
-                    self.phase = GamePhase.POST_BATTLE
+                if result.battle_ended:
+                    # Handle outcome
+                    outcome = result.outcome
+                    
+                    if outcome == BattleOutcome.WIN:
+                        self._episode_stats["battles_won"] += 1
+                        self._episode_stats["max_streak"] = max(
+                            self._episode_stats["max_streak"],
+                            self.controller.run_stats.win_streak
+                        )
+                    else:
+                        self._episode_stats["battles_lost"] += 1
+                        terminated = True
         
-        elif self.phase == GamePhase.POST_BATTLE:
-            # Handle battle outcome
-            drafter_reward, run_complete = self.system.handle_post_battle()
-            reward += drafter_reward
-            
-            if self.system.run_stats.battles_won > self._episode_stats["battles_won"]:
-                self._episode_stats["battles_won"] = self.system.run_stats.battles_won
-                self._episode_stats["max_streak"] = max(
-                    self._episode_stats["max_streak"],
-                    self.system.current_streak
-                )
-            
-            if run_complete:
-                terminated = True
-                self.phase = GamePhase.RUN_COMPLETE
-            elif self.system.phase == GamePhase.SWAP:
-                self.phase = GamePhase.SWAP
-            else:
-                self.phase = GamePhase.BATTLE
-                self.system.reset_battle()
-        
-        elif self.phase == GamePhase.SWAP:
+        elif phase == GamePhase.SWAP_SCREEN:
             # Swap action
-            if 6 <= action <= 9:
-                swap_action = action - 6  # 0=keep, 1-3=swap
-                self.system.execute_swap(swap_action)
-                self.phase = GamePhase.BATTLE
-                self.system.reset_battle()
+            if 12 <= action <= 15:
+                swap_action = action - 12
+                
+                def drafter_fn(obs, ph):
+                    return np.array([swap_action])
+                
+                self.controller.step_swap(drafter_fn)
+        
+        elif phase == GamePhase.RUN_COMPLETE:
+            terminated = True
         
         # Check truncation
-        if self.system.current_streak >= self.max_battles:
+        if self.controller.run_stats.win_streak >= self.max_battles:
             truncated = True
         
         obs = self._get_observation()
         
         info = {
-            "phase": self.phase.name,
-            "streak": self.system.current_streak,
+            "phase": self.controller.phase.name,
+            "streak": self.controller.run_stats.win_streak,
             "stats": self._episode_stats.copy(),
+            "turn": self._current_turn,
         }
         
         return obs, reward, terminated, truncated, info
     
-    def render(self):
+    def render(self) -> None:
         """Render current state."""
-        logger.info(f"Phase: {self.phase.name} | Streak: {self.system.current_streak}")
+        logger.info(
+            f"Phase: {self.controller.phase.name} | "
+            f"Streak: {self.controller.run_stats.win_streak}"
+        )
     
-    def close(self):
+    def close(self) -> None:
         """Clean up resources."""
-        if hasattr(self.backend, 'sock') and self.backend.sock:
-            self.backend.sock.close()
+        if self._connected:
+            self.controller.disconnect()
+            self._connected = False
 
 
 # =============================================================================
 # Environment Registration for RLlib
 # =============================================================================
 
-def register_envs():
+def register_envs() -> None:
     """Register environments with Gymnasium."""
     from gymnasium.envs.registration import register
     
-    # Note: These registrations allow RLlib to create envs by string ID
     try:
         register(
             id="BattleFactory-Tactician-v0",
             entry_point="src.env:TacticianEnv",
         )
         register(
-            id="BattleFactory-Drafter-v0", 
+            id="BattleFactory-Drafter-v0",
             entry_point="src.env:DrafterEnv",
         )
         register(
@@ -575,7 +696,7 @@ def register_envs():
         pass  # Already registered
 
 
-# Legacy compatibility with old gym
+# Legacy compatibility alias
 class EmeraldBattleFactoryEnv(BattleFactoryEnv):
     """Legacy alias for backwards compatibility."""
     pass

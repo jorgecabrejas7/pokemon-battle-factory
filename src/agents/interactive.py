@@ -6,14 +6,17 @@ These agents prompt the user for decisions, useful for:
 2. Human-in-the-loop gameplay
 3. Data collection for imitation learning
 
-Both agents implement the same interface as random and trained agents.
+Both agents implement the standardized interface expected by TrainingController.
 """
+
+from __future__ import annotations
 
 import numpy as np
 from typing import Any, Tuple, Optional
 import logging
 
 from .base import BaseDrafter, BaseTactician
+from ..core.enums import GamePhase
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +55,7 @@ class InteractiveDrafter(BaseDrafter):
     
     Usage:
         drafter = InteractiveDrafter()
-        
-        # Draft phase - prompts for 3 selections
-        selections = drafter.select_team(obs)
-        
-        # Swap phase - prompts for swap decision
-        swap = drafter.decide_swap(obs)
+        action = drafter(obs, GamePhase.DRAFT_SCREEN)
     """
     
     def __init__(self, show_obs: bool = True):
@@ -69,15 +67,27 @@ class InteractiveDrafter(BaseDrafter):
         """
         self.show_obs = show_obs
     
-    def __call__(self, obs: np.ndarray) -> np.ndarray:
+    def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
         """
-        Unified interface - determines draft vs swap from obs.
+        Main policy interface.
+        
+        Args:
+            obs: Observation array
+            phase: Current game phase
+            
+        Returns:
+            Action array for the phase
         """
-        # Draft obs is larger (6 rentals)
-        if len(obs) > 25:
+        if phase == GamePhase.DRAFT_SCREEN:
             return self.select_team(obs)
-        else:
+        elif phase == GamePhase.SWAP_SCREEN:
             return np.array([self.decide_swap(obs)])
+        else:
+            # Fallback: use observation size
+            if len(obs) > 25:
+                return self.select_team(obs)
+            else:
+                return np.array([self.decide_swap(obs)])
     
     def select_team(self, rental_obs: np.ndarray) -> np.ndarray:
         """
@@ -178,10 +188,7 @@ class InteractiveTactician(BaseTactician):
     
     Usage:
         tactician = InteractiveTactician()
-        hidden = tactician.reset()
-        
-        while in_battle:
-            action, hidden = tactician(obs, hidden, mask)
+        action = tactician(obs, GamePhase.IN_BATTLE, mask)
     """
     
     def __init__(self, show_obs: bool = True, show_mask: bool = True):
@@ -199,18 +206,27 @@ class InteractiveTactician(BaseTactician):
     def __call__(
         self,
         obs: np.ndarray,
-        hidden_state: Any,
+        phase: GamePhase,
         action_mask: np.ndarray,
-    ) -> Tuple[int, Any]:
-        """Main interface."""
-        return self.select_action(obs, hidden_state, action_mask)
+    ) -> int:
+        """
+        Main policy interface.
+        
+        Args:
+            obs: Battle observation
+            phase: Current game phase
+            action_mask: Valid action mask
+            
+        Returns:
+            Action index 0-5
+        """
+        return self.select_action(obs, action_mask)
     
     def select_action(
         self,
         obs: np.ndarray,
-        hidden_state: Any,
         action_mask: np.ndarray,
-    ) -> Tuple[int, Any]:
+    ) -> int:
         """
         Prompt user for battle action.
         """
@@ -256,7 +272,7 @@ class InteractiveTactician(BaseTactician):
                 
                 if action in valid_actions:
                     print(f"Selected: {BATTLE_ACTION_NAMES[action]}")
-                    return action, hidden_state
+                    return action
                 else:
                     print(f"Invalid action. Choose from: {valid_actions}")
                     
@@ -264,17 +280,15 @@ class InteractiveTactician(BaseTactician):
                 print("Invalid input. Enter a number.")
             except KeyboardInterrupt:
                 print("\nUsing random valid action...")
-                action = np.random.choice(valid_actions) if valid_actions else 0
-                return action, hidden_state
+                return int(np.random.choice(valid_actions)) if valid_actions else 0
     
     def get_initial_hidden_state(self) -> Any:
         """No hidden state for interactive."""
         return None
     
-    def reset(self) -> Any:
+    def reset(self) -> None:
         """Reset turn counter."""
         self.turn_count = 0
-        return None
 
 
 # =============================================================================
@@ -319,8 +333,8 @@ class AssistedDrafter(BaseDrafter):
         self.ai_drafter = ai_drafter
         self.auto_accept = auto_accept
     
-    def __call__(self, obs: np.ndarray) -> np.ndarray:
-        if len(obs) > 25:
+    def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
+        if phase == GamePhase.DRAFT_SCREEN:
             return self.select_team(obs)
         else:
             return np.array([self.decide_swap(obs)])
@@ -349,7 +363,7 @@ class AssistedDrafter(BaseDrafter):
             selections = [int(x) for x in user_input.split()]
             if len(selections) == 3 and all(0 <= s <= 5 for s in selections):
                 return np.array(selections)
-        except:
+        except Exception:
             pass
         
         print("Invalid input, using AI suggestion")
@@ -370,11 +384,10 @@ class AssistedDrafter(BaseDrafter):
             choice = int(user_input)
             if 0 <= choice <= 3:
                 return choice
-        except:
+        except Exception:
             pass
         
         return ai_swap
     
     def reset(self):
         self.ai_drafter.reset()
-

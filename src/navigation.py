@@ -47,7 +47,7 @@ class Button(Enum):
 class NavStep:
     """Single navigation step."""
     button: Button
-    hold_time: float = 0.5       # How long to hold button (seconds)
+    hold_time: float = 0.08       # How long to hold button (seconds)
     wait_after: float = 0.25     # Wait after release (seconds)
     description: str = ""
 

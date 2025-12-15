@@ -6,15 +6,18 @@ These agents make random (but valid) decisions, useful for:
 2. Baseline performance comparison
 3. Exploration during early training
 
-Both agents implement the same interface as trained agents,
-allowing seamless swapping in the BattleFactorySystem.
+Both agents implement the standardized interfaces expected by
+TrainingController, allowing seamless swapping with trained agents.
 """
 
+from __future__ import annotations
+
 import numpy as np
-from typing import Any, Tuple, Optional
+from typing import Any, Tuple, Optional, Dict
 import logging
 
-from .base import BaseDrafter, BaseTactician
+from .base import BaseDrafter, BaseTactician, AgentConfig
+from ..core.enums import GamePhase
 
 logger = logging.getLogger(__name__)
 
@@ -29,18 +32,12 @@ class RandomDrafter(BaseDrafter):
     Swap Phase:
         Randomly decides whether to keep the team or swap one member.
         Has a configurable probability to prefer keeping the team.
-        
+    
     Usage:
         drafter = RandomDrafter(seed=42, swap_probability=0.3)
         
-        # During draft
-        selections = drafter.select_team(rental_obs)  # Returns [2, 0, 5]
-        
-        # During swap  
-        swap_action = drafter.decide_swap(swap_obs)  # Returns 0-3
-        
-        # Or use unified interface
-        action = drafter(obs)  # System determines phase from obs shape
+        # Called by controller
+        action = drafter(obs, GamePhase.DRAFT_SCREEN)
     """
     
     def __init__(
@@ -53,97 +50,87 @@ class RandomDrafter(BaseDrafter):
         Initialize RandomDrafter.
         
         Args:
-            seed: Random seed for reproducibility (None = random)
-            swap_probability: Probability of swapping when offered (0.0-1.0)
-            verbose: Whether to log decisions
+            seed: Random seed for reproducibility
+            swap_probability: Probability of swapping when offered (0-1)
+            verbose: Log decisions
         """
         self.rng = np.random.default_rng(seed)
         self.swap_probability = swap_probability
         self.verbose = verbose
         
-        # Track decisions for analysis
-        self.draft_history = []
-        self.swap_history = []
-        
-    def __call__(self, obs: np.ndarray) -> np.ndarray:
+        # Decision history
+        self.draft_history: list[np.ndarray] = []
+        self.swap_history: list[int] = []
+    
+    def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
         """
-        Unified policy interface for both draft and swap.
-        
-        Determines phase based on observation structure:
-        - Draft obs has 6 rental features + context (larger)
-        - Swap obs has team + candidate + context (smaller)
+        Main policy interface.
         
         Args:
             obs: Observation array
+            phase: Current game phase
             
         Returns:
-            Action array appropriate for the phase
+            Action array for the phase
         """
-        # Heuristic: Draft observations are larger (6 rentals)
-        # Swap observations are smaller (3 team + 1 candidate)
-        # Using 25 as threshold (draft has ~20 rental features + context)
-        if len(obs) > 25:
-            # Draft phase
+        if phase == GamePhase.DRAFT_SCREEN:
             return self.select_team(obs)
-        else:
-            # Swap phase
+        elif phase == GamePhase.SWAP_SCREEN:
             return np.array([self.decide_swap(obs)])
+        else:
+            # Fallback: use observation size heuristic
+            if len(obs) > 15:
+                return self.select_team(obs)
+            else:
+                return np.array([self.decide_swap(obs)])
     
     def select_team(self, rental_obs: np.ndarray) -> np.ndarray:
         """
-        Randomly select 3 Pokemon from 6 rental candidates.
+        Randomly select 3 Pokemon from 6 rentals.
         
         Args:
-            rental_obs: Observation containing rental Pokemon features
+            rental_obs: Rental Pokemon observation
             
         Returns:
-            Array of 3 unique indices [0-5] in selection order
+            Array of 3 unique indices [0-5]
         """
-        # Select 3 unique indices from [0, 1, 2, 3, 4, 5]
         selections = self.rng.choice(6, size=3, replace=False)
         
         if self.verbose:
-            logger.info(f"[RandomDrafter] Draft selections: {selections}")
-            
+            logger.info(f"[RandomDrafter] Draft: {selections}")
+        
         self.draft_history.append(selections.copy())
         return selections
     
     def decide_swap(self, swap_obs: np.ndarray) -> int:
         """
-        Randomly decide whether to swap a team member.
-        
-        With probability `swap_probability`, chooses to swap.
-        When swapping, randomly picks which slot to replace.
+        Randomly decide whether to swap.
         
         Args:
-            swap_obs: Observation of team + swap candidate
+            swap_obs: Swap observation
             
         Returns:
-            0 = keep team, 1-3 = swap slot N
+            0=keep, 1-3=swap slot N
         """
-        # Decide whether to swap at all
         if self.rng.random() < self.swap_probability:
-            # Choose which slot to swap (1, 2, or 3)
-            swap_slot = self.rng.integers(1, 4)  # [1, 2, 3]
-            
+            swap_slot = int(self.rng.integers(1, 4))
             if self.verbose:
-                logger.info(f"[RandomDrafter] Swapping slot {swap_slot}")
+                logger.info(f"[RandomDrafter] Swap slot {swap_slot}")
         else:
-            swap_slot = 0  # Keep team
-            
+            swap_slot = 0
             if self.verbose:
-                logger.info("[RandomDrafter] Keeping team (no swap)")
-                
+                logger.info("[RandomDrafter] Keep team")
+        
         self.swap_history.append(swap_slot)
         return swap_slot
     
     def reset(self) -> None:
-        """Reset history for a new run."""
+        """Reset history."""
         self.draft_history.clear()
         self.swap_history.clear()
-        
-    def get_stats(self) -> dict:
-        """Get statistics about decisions made."""
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get decision statistics."""
         total_swaps = sum(1 for s in self.swap_history if s > 0)
         return {
             "total_drafts": len(self.draft_history),
@@ -159,19 +146,15 @@ class RandomTactician(BaseTactician):
     
     Randomly selects valid actions during battle:
     - Actions 0-3: Use move 1-4
-    - Actions 4-5: Switch to Pokemon 1-2 on bench
+    - Actions 4-5: Switch to bench Pokemon 1-2
     
-    Respects the action mask to only choose valid actions
-    (e.g., won't select a move with 0 PP or switch to fainted Pokemon).
+    Respects action mask to only choose valid actions.
     
     Usage:
-        tactician = RandomTactician(seed=42)
+        tactician = RandomTactician(seed=42, move_bias=0.7)
         
-        # Reset at battle start
-        hidden = tactician.reset()
-        
-        # Each turn
-        action, hidden = tactician(obs, hidden, action_mask)
+        # Called by controller
+        action = tactician(obs, GamePhase.IN_BATTLE, mask)
     """
     
     def __init__(
@@ -184,151 +167,120 @@ class RandomTactician(BaseTactician):
         Initialize RandomTactician.
         
         Args:
-            seed: Random seed for reproducibility (None = random)
-            move_bias: Probability weight towards moves vs switches (0.0-1.0)
-                       Higher = prefer moves, lower = more switches
-            verbose: Whether to log decisions
+            seed: Random seed for reproducibility
+            move_bias: Probability weight towards moves vs switches (0-1)
+            verbose: Log decisions
         """
         self.rng = np.random.default_rng(seed)
         self.move_bias = move_bias
         self.verbose = verbose
         
-        # Track decisions for analysis
-        self.action_history = []
+        # Decision history
+        self.action_history: list[int] = []
         self.turn_count = 0
         
+        # Hidden state (None for random agent)
+        self._hidden_state = None
+    
     def __call__(
         self,
         obs: np.ndarray,
-        hidden_state: Any,
+        phase: GamePhase,
         action_mask: np.ndarray,
-    ) -> Tuple[int, Any]:
+    ) -> int:
         """
-        Main policy interface - delegates to select_action.
+        Main policy interface.
         
         Args:
             obs: Battle observation
-            hidden_state: Previous hidden state (unused for random)
-            action_mask: Valid action mask [6]
+            phase: Current game phase
+            action_mask: Valid action mask
             
         Returns:
-            (action, new_hidden_state)
+            Action index 0-5
         """
-        return self.select_action(obs, hidden_state, action_mask)
+        return self.select_action(obs, action_mask)
     
     def select_action(
         self,
         obs: np.ndarray,
-        hidden_state: Any,
         action_mask: np.ndarray,
-    ) -> Tuple[int, Any]:
+    ) -> int:
         """
-        Select a random valid battle action.
-        
-        Uses action mask to filter invalid actions.
-        Optionally biases towards moves over switches.
+        Select a random valid action.
         
         Args:
-            obs: Battle observation array
-            hidden_state: LSTM hidden state (unused - random agent)
-            action_mask: Binary mask [6] of valid actions
+            obs: Battle observation
+            action_mask: Valid action mask [6]
             
         Returns:
-            Tuple of (action, hidden_state):
-                - action: Valid action index 0-5
-                - hidden_state: Unchanged (no recurrence in random)
+            Action index 0-5
         """
-        # Ensure mask is valid
+        # Ensure valid mask
         if action_mask is None or len(action_mask) != 6:
             action_mask = np.ones(6)
         
-        # Get valid actions
         valid_actions = np.where(action_mask > 0)[0]
         
         if len(valid_actions) == 0:
-            # Fallback: if no valid actions (shouldn't happen), pick move 1
-            logger.warning("[RandomTactician] No valid actions! Defaulting to 0")
+            logger.warning("[RandomTactician] No valid actions, defaulting to 0")
             action = 0
-        else:
-            # Optionally bias towards moves (0-3) vs switches (4-5)
-            if self.move_bias > 0:
-                # Separate moves and switches
-                valid_moves = [a for a in valid_actions if a < 4]
-                valid_switches = [a for a in valid_actions if a >= 4]
-                
-                # Decide category first, then pick within
-                if valid_moves and valid_switches:
-                    if self.rng.random() < self.move_bias:
-                        action = self.rng.choice(valid_moves)
-                    else:
-                        action = self.rng.choice(valid_switches)
-                elif valid_moves:
-                    action = self.rng.choice(valid_moves)
+        elif self.move_bias > 0:
+            # Bias towards moves
+            valid_moves = [a for a in valid_actions if a < 4]
+            valid_switches = [a for a in valid_actions if a >= 4]
+            
+            if valid_moves and valid_switches:
+                if self.rng.random() < self.move_bias:
+                    action = int(self.rng.choice(valid_moves))
                 else:
-                    action = self.rng.choice(valid_switches)
+                    action = int(self.rng.choice(valid_switches))
+            elif valid_moves:
+                action = int(self.rng.choice(valid_moves))
             else:
-                # Uniform random over valid actions
-                action = self.rng.choice(valid_actions)
+                action = int(self.rng.choice(valid_switches))
+        else:
+            action = int(self.rng.choice(valid_actions))
         
-        action = int(action)
         self.turn_count += 1
         self.action_history.append(action)
         
         if self.verbose:
-            action_names = ["Move1", "Move2", "Move3", "Move4", "Switch1", "Switch2"]
-            logger.info(f"[RandomTactician] Turn {self.turn_count}: {action_names[action]} "
-                       f"(mask={action_mask.tolist()})")
+            names = ["Move1", "Move2", "Move3", "Move4", "Switch1", "Switch2"]
+            logger.info(f"[RandomTactician] Turn {self.turn_count}: {names[action]}")
         
-        # Hidden state unchanged for random agent
-        return action, hidden_state
+        return action
     
     def get_initial_hidden_state(self) -> Any:
-        """
-        Get initial hidden state.
-        
-        For random agent, this is None since we don't use recurrence.
-        Trained agents would return zero-initialized LSTM states.
-        
-        Returns:
-            None (random agent has no hidden state)
-        """
+        """Return None (no hidden state for random)."""
         return None
     
-    def reset(self) -> Any:
-        """
-        Reset for a new battle.
-        
-        Returns:
-            Initial hidden state (None for random)
-        """
+    def reset(self) -> None:
+        """Reset for new battle."""
         self.turn_count = 0
-        # Note: Don't clear action_history here - keep across battles
-        # for full run statistics
-        return self.get_initial_hidden_state()
+        self._hidden_state = None
     
     def reset_run(self) -> None:
-        """Reset all history for a completely new run."""
+        """Reset all state."""
         self.turn_count = 0
         self.action_history.clear()
-        
-    def get_stats(self) -> dict:
-        """Get statistics about actions taken."""
+        self._hidden_state = None
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get action statistics."""
         if not self.action_history:
             return {"total_actions": 0}
-            
-        actions = np.array(self.action_history)
-        moves = np.sum(actions < 4)
-        switches = np.sum(actions >= 4)
         
-        # Count each action type
-        action_counts = {i: np.sum(actions == i) for i in range(6)}
+        actions = np.array(self.action_history)
+        moves = int(np.sum(actions < 4))
+        switches = int(np.sum(actions >= 4))
         
         return {
             "total_actions": len(actions),
-            "total_moves": int(moves),
-            "total_switches": int(switches),
+            "total_moves": moves,
+            "total_switches": switches,
             "move_rate": float(moves / len(actions)),
-            "action_distribution": action_counts,
+            "action_distribution": {i: int(np.sum(actions == i)) for i in range(6)},
         }
 
 
@@ -339,13 +291,17 @@ class RandomTactician(BaseTactician):
 def create_random_agents(
     seed: Optional[int] = None,
     verbose: bool = False,
+    swap_probability: float = 0.3,
+    move_bias: float = 0.7,
 ) -> Tuple[RandomDrafter, RandomTactician]:
     """
-    Create a pair of random agents for testing.
+    Create a pair of random agents.
     
     Args:
         seed: Base random seed (drafter=seed, tactician=seed+1)
-        verbose: Whether agents should log decisions
+        verbose: Log decisions
+        swap_probability: Drafter swap probability
+        move_bias: Tactician move vs switch bias
         
     Returns:
         (RandomDrafter, RandomTactician) tuple
@@ -353,8 +309,15 @@ def create_random_agents(
     drafter_seed = seed if seed is not None else None
     tactician_seed = seed + 1 if seed is not None else None
     
-    drafter = RandomDrafter(seed=drafter_seed, verbose=verbose)
-    tactician = RandomTactician(seed=tactician_seed, verbose=verbose)
+    drafter = RandomDrafter(
+        seed=drafter_seed,
+        swap_probability=swap_probability,
+        verbose=verbose
+    )
+    tactician = RandomTactician(
+        seed=tactician_seed,
+        move_bias=move_bias,
+        verbose=verbose
+    )
     
     return drafter, tactician
-
