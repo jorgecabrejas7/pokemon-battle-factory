@@ -41,7 +41,7 @@ class DrafterProtocol(Protocol):
                 - For draft: 6 rental Pokemon features + context
                 - For swap: Current team + swap candidate + context
             phase: Current game phase (DRAFT_SCREEN or SWAP_SCREEN)
-            
+                
         Returns:
             Action array:
                 - For draft: Shape (3,) with indices [0-5] for selections
@@ -153,8 +153,8 @@ class BaseTactician(ABC):
     
     @abstractmethod
     def __call__(
-        self,
-        obs: np.ndarray,
+        self, 
+        obs: np.ndarray, 
         phase: GamePhase,
         action_mask: np.ndarray,
     ) -> int:
@@ -165,7 +165,7 @@ class BaseTactician(ABC):
             obs: Battle observation array
             phase: Current game phase
             action_mask: Binary mask of valid actions
-            
+                
         Returns:
             Action index 0-5
         """

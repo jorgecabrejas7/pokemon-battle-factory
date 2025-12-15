@@ -233,12 +233,15 @@ class InputController:
         
         # Send button press
         self.backend._send_command(f"SET_INPUT {button.mask}")
-        time.sleep(hold)
+        
+        # Only sleep if hold time > 0 (allows zero-hold instant clicks)
+        if hold > 0:
+            time.sleep(hold)
         
         # Release
         self.backend._send_command("SET_INPUT 0")
         
-        # Wait after
+        # Only wait if wait time > 0 (allows zero-wait)
         if wait > 0:
             time.sleep(wait)
     

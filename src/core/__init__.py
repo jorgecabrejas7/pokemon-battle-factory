@@ -26,11 +26,11 @@ from .enums import (
 
 from .dataclasses import (
     Move,
-    BasePokemon,
-    RentalPokemon,
-    PlayerPokemon,
-    EnemyPokemon,
-    BattleState,
+    BasePokemon, 
+    RentalPokemon, 
+    PlayerPokemon, 
+    EnemyPokemon, 
+    BattleState, 
     FactoryState,
 )
 

@@ -138,13 +138,14 @@ class TimingConfig:
         Set timing for different speed modes.
         
         Args:
-            mode: One of 'normal', 'fast', 'turbo', 'instant'
+            mode: One of 'normal', 'fast', 'turbo', 'instant', 'zero'
         
         Presets:
             normal:  Standard timing (default)
             fast:    2x faster, good for training
             turbo:   4x faster, for fast-forward emulation
-            instant: Minimal delays, max speed
+            instant: Minimal delays (1ms hold, no waits)
+            zero:    Zero hold time, instant press/release (fastest)
         """
         presets = {
             'normal': {
@@ -169,11 +170,18 @@ class TimingConfig:
                 'wait_battle': 0.5,
             },
             'instant': {
-                'button_hold_time': 0.01,
-                'wait_short': 0.02,
-                'wait_medium': 0.04,
-                'wait_long': 0.08,
-                'wait_battle': 0.15,
+                'button_hold_time': 0.001,  # Minimal hold (1ms)
+                'wait_short': 0.0,          # No wait
+                'wait_medium': 0.0,
+                'wait_long': 0.0,
+                'wait_battle': 0.0,
+            },
+            'zero': {
+                'button_hold_time': 0.0,    # Zero hold - instant press/release
+                'wait_short': 0.0,
+                'wait_medium': 0.0,
+                'wait_long': 0.0,
+                'wait_battle': 0.0,
             },
         }
         

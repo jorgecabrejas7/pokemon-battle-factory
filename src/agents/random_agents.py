@@ -32,7 +32,7 @@ class RandomDrafter(BaseDrafter):
     Swap Phase:
         Randomly decides whether to keep the team or swap one member.
         Has a configurable probability to prefer keeping the team.
-    
+        
     Usage:
         drafter = RandomDrafter(seed=42, swap_probability=0.3)
         
@@ -61,7 +61,7 @@ class RandomDrafter(BaseDrafter):
         # Decision history
         self.draft_history: list[np.ndarray] = []
         self.swap_history: list[int] = []
-    
+        
     def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
         """
         Main policy interface.
@@ -98,7 +98,7 @@ class RandomDrafter(BaseDrafter):
         
         if self.verbose:
             logger.info(f"[RandomDrafter] Draft: {selections}")
-        
+            
         self.draft_history.append(selections.copy())
         return selections
     
@@ -120,7 +120,7 @@ class RandomDrafter(BaseDrafter):
             swap_slot = 0
             if self.verbose:
                 logger.info("[RandomDrafter] Keep team")
-        
+                
         self.swap_history.append(swap_slot)
         return swap_slot
     
@@ -128,7 +128,7 @@ class RandomDrafter(BaseDrafter):
         """Reset history."""
         self.draft_history.clear()
         self.swap_history.clear()
-    
+        
     def get_stats(self) -> Dict[str, Any]:
         """Get decision statistics."""
         total_swaps = sum(1 for s in self.swap_history if s > 0)
@@ -181,7 +181,7 @@ class RandomTactician(BaseTactician):
         
         # Hidden state (None for random agent)
         self._hidden_state = None
-    
+        
     def __call__(
         self,
         obs: np.ndarray,
@@ -265,12 +265,12 @@ class RandomTactician(BaseTactician):
         self.turn_count = 0
         self.action_history.clear()
         self._hidden_state = None
-    
+        
     def get_stats(self) -> Dict[str, Any]:
         """Get action statistics."""
         if not self.action_history:
             return {"total_actions": 0}
-        
+            
         actions = np.array(self.action_history)
         moves = int(np.sum(actions < 4))
         switches = int(np.sum(actions >= 4))

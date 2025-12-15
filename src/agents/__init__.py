@@ -24,8 +24,8 @@ from .random_agents import (
 )
 
 from .interactive import (
-    InteractiveDrafter,
-    InteractiveTactician,
+    InteractiveDrafter, 
+    InteractiveTactician, 
     create_interactive_agents,
 )
 

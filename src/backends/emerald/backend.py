@@ -86,7 +86,7 @@ class EmeraldBackend(BattleBackend):
         # Battle Knowledge Tracking
         self.current_enemy_species_id: int = 0
         self.revealed_enemy_moves: Set[int] = set()
-        
+
         # Knowledge base (lazy loaded)
         self._kb: Optional[KnowledgeBase] = None
     
@@ -165,14 +165,14 @@ class EmeraldBackend(BattleBackend):
                     )
                 )
             elif isinstance(e, socket.timeout):
-                raise ConnectionError(
+            raise ConnectionError(
                     "Connection to mGBA timed out",
                     host=self._host,
                     port=self._port,
                     reason="The game may be paused - script only runs during gameplay"
-                )
+            )
             else:
-                raise ConnectionError(
+            raise ConnectionError(
                     f"Connection failed: {e}",
                     host=self._host,
                     port=self._port,
@@ -202,7 +202,7 @@ class EmeraldBackend(BattleBackend):
     # =========================================================================
     # Command Interface
     # =========================================================================
-    
+
     def _send_command(self, cmd: str) -> str:
         """
         Send command to mGBA and get response.
@@ -247,12 +247,12 @@ class EmeraldBackend(BattleBackend):
     # =========================================================================
     # BattleBackend Protocol Implementation
     # =========================================================================
-    
+
     def read_battle_state(self) -> BattleState:
         """Read current battle state from memory."""
         if not self.memory:
             return BattleState()
-        
+            
         outcome = self.memory.read_battle_outcome()
         move_id, move_user = self.memory.read_last_move()
         is_input = self.memory.read_input_status()
@@ -270,11 +270,11 @@ class EmeraldBackend(BattleBackend):
             # Populate Player Pokemon
             p_moves = []
             for i, mid in enumerate(p_data.moves):
-                if mid > 0:
+                 if mid > 0:
                     try:
                         mdata = self.kb.get_move(mid)
-                        p_moves.append(Move(
-                            move_id=mid,
+                     p_moves.append(Move(
+                         move_id=mid,
                             name=mdata.name,
                             type_id=0,
                             base_power=mdata.power,
@@ -283,7 +283,7 @@ class EmeraldBackend(BattleBackend):
                         ))
                     except Exception:
                         p_moves.append(Move(move_id=mid, name=f"Move#{mid}"))
-            
+
             player_mon = PlayerPokemon(
                 species_id=p_data.species_id,
                 level=p_data.level,
@@ -311,12 +311,12 @@ class EmeraldBackend(BattleBackend):
             for mid in self.revealed_enemy_moves:
                 try:
                     mdata = self.kb.get_move(mid)
-                    e_moves.append(Move(
-                        move_id=mid,
+                e_moves.append(Move(
+                    move_id=mid,
                         name=mdata.name,
                         base_power=mdata.power,
                         accuracy=mdata.accuracy
-                    ))
+                ))
                 except Exception:
                     e_moves.append(Move(move_id=mid, name=f"Move#{mid}"))
             
@@ -328,7 +328,7 @@ class EmeraldBackend(BattleBackend):
                               if e_data.max_hp > 0 else 0.0,
                 revealed_moves=e_moves
             )
-        
+            
         return BattleState(
             active_pokemon=player_mon,
             enemy_active_pokemon=enemy_mon,
@@ -337,7 +337,7 @@ class EmeraldBackend(BattleBackend):
             last_move_user=move_user,
             is_waiting_for_input=is_input
         )
-    
+
     def inject_action(self, action_id: int) -> None:
         """
         Inject a button press.
@@ -366,12 +366,12 @@ class EmeraldBackend(BattleBackend):
         self._send_command(f"SET_INPUT {mask}")
         time.sleep(config.timing.button_hold_time)
         self._send_command("SET_INPUT 0")
-    
+
     def advance_frame(self, frames: int = 1) -> None:
         """Advance emulator by N frames."""
         self._ensure_connected()
         self._send_command(f"FRAME_ADVANCE {frames}")
-    
+
     def run_until_input_required(self) -> BattleState:
         """
         Run emulator until player input is required or battle ends.
@@ -382,8 +382,8 @@ class EmeraldBackend(BattleBackend):
             Final BattleState when input is needed or battle ends
         """
         if not self.memory:
-            return BattleState()
-        
+             return BattleState()
+
         max_frames = int(config.timing.input_timeout * config.timing.fps)
         frames_run = 0
         
@@ -398,23 +398,23 @@ class EmeraldBackend(BattleBackend):
             # Update move info if changed
             curr_move_id, curr_user = self.memory.read_last_move()
             if curr_move_id != 0:
-                last_move_id = curr_move_id
-                last_move_user = curr_user
-                
+                 last_move_id = curr_move_id
+                 last_move_user = curr_user
+                 
                 # Track enemy moves (users 1 and 3 are enemy slots)
-                if curr_user in [1, 3]:
-                    self.revealed_enemy_moves.add(curr_move_id)
+                 if curr_user in [1, 3]:
+                     self.revealed_enemy_moves.add(curr_move_id)
             
             # Stop conditions
             if outcome != BattleOutcome.ONGOING:
                 break
             if is_input:
                 break
-            
+                
             # Advance (5 frames at a time for efficiency)
             self.advance_frame(5)
             frames_run += 5
-        
+            
         # Check for enemy switch (species change)
         try:
             mons = self.memory.read_battle_mons()
@@ -425,41 +425,41 @@ class EmeraldBackend(BattleBackend):
                     self.revealed_enemy_moves.clear()
         except Exception as e:
             logger.debug(f"Error checking enemy switch: {e}")
-        
+
         # Build final state
         final_state = self.read_battle_state()
         final_state.last_move_used = last_move_id
         final_state.last_move_user = last_move_user
         
         return final_state
-    
+
     def read_factory_state(self) -> FactoryState:
         """Read Battle Factory specific state."""
         if not self.memory:
             return FactoryState()
-        
+            
         frontier = self.memory.read_frontier_state()
         if not frontier:
             return FactoryState()
-        
+            
         return FactoryState(win_streak=frontier.win_streak)
-    
+
     def save_state(self) -> bytes:
         """Save emulator state (not implemented for socket backend)."""
         # Would require mGBA savestate support in connector.lua
         return b""
-    
+
     def load_state(self, state: bytes) -> None:
         """Load emulator state (not implemented for socket backend)."""
         pass
-    
+
     def reset(self) -> None:
         """Reset emulator and tracking state."""
         self._ensure_connected()
         self._send_command("RESET")
         self.current_enemy_species_id = 0
         self.revealed_enemy_moves.clear()
-    
+
     def get_game_version(self) -> str:
         """Get game version identifier."""
         return "emerald"
@@ -474,13 +474,17 @@ class EmeraldBackend(BattleBackend):
         
         Args:
             button: Button mask from Buttons class
-            hold_time: How long to hold (default from config)
+            hold_time: How long to hold (default from config). Use 0 for instant.
         """
         self._ensure_connected()
-        hold = hold_time or config.timing.button_hold_time
+        hold = hold_time if hold_time is not None else config.timing.button_hold_time
         
         self._send_command(f"SET_INPUT {button}")
-        time.sleep(hold)
+        
+        # Only sleep if hold time > 0 (allows zero-hold instant clicks)
+        if hold > 0:
+            time.sleep(hold)
+        
         self._send_command("SET_INPUT 0")
     
     def is_waiting_for_input(self) -> bool:
