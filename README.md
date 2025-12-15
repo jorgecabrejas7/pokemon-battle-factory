@@ -109,7 +109,8 @@ from src.config import config
 config.timing.set_speed_mode('normal')   # Default
 config.timing.set_speed_mode('fast')     # 2x faster
 config.timing.set_speed_mode('turbo')    # 4x faster
-config.timing.set_speed_mode('instant')  # Maximum speed
+config.timing.set_speed_mode('instant')  # 1ms hold, no waits
+config.timing.set_speed_mode('zero')     # Zero hold, instant press/release (FASTEST)
 
 # Custom values (in seconds)
 config.timing.set_custom_timing(
