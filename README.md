@@ -105,12 +105,12 @@ Controls button press speed. **Location:** `config.timing`
 ```python
 from src.config import config
 
-# Use presets
-config.timing.set_speed_mode('normal')   # Default
+# Use presets (default is 'zero' for maximum speed)
+config.timing.set_speed_mode('zero')     # Zero hold, instant press/release (DEFAULT - FASTEST)
+config.timing.set_speed_mode('normal')   # Standard timing (0.08s hold, 0.25s wait)
 config.timing.set_speed_mode('fast')     # 2x faster
 config.timing.set_speed_mode('turbo')    # 4x faster
 config.timing.set_speed_mode('instant')  # 1ms hold, no waits
-config.timing.set_speed_mode('zero')     # Zero hold, instant press/release (FASTEST)
 
 # Custom values (in seconds)
 config.timing.set_custom_timing(

@@ -655,8 +655,8 @@ def main():
         "--speed",
         type=str,
         choices=["normal", "fast", "turbo", "instant", "zero"],
-        default="normal",
-        help="Input timing mode: normal, fast, turbo, instant, or zero (default: normal). 'zero' = instant press/release, fastest.",
+        default="zero",
+        help="Input timing mode: normal, fast, turbo, instant, or zero (default: zero). 'zero' = instant press/release, fastest.",
     )
     parser.add_argument(
         "--hold-time",

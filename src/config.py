@@ -108,14 +108,14 @@ class TimingConfig:
     Use set_speed_mode() for quick presets.
     """
     
-    # Button press durations
-    button_hold_time: float = 0.08      # ~5 frames at 60fps
+    # Button press durations (default: zero for maximum speed)
+    button_hold_time: float = 0.0       # Zero hold - instant press/release
     
-    # Wait times after actions
-    wait_short: float = 0.25            # ~15 frames
-    wait_medium: float = 0.5            # ~30 frames
-    wait_long: float = 1.0              # ~60 frames
-    wait_battle: float = 2.0            # For battle animations
+    # Wait times after actions (default: zero for maximum speed)
+    wait_short: float = 0.0             # No wait after button press
+    wait_medium: float = 0.0           # No wait for menu transitions
+    wait_long: float = 0.0              # No wait for screen transitions
+    wait_battle: float = 0.0            # No wait for battle animations
     
     # Timeouts
     input_timeout: float = 60.0         # Max wait for input prompt
