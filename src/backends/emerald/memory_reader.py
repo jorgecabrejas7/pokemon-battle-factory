@@ -4,7 +4,7 @@ Provides high-level methods to read game state from emulator memory.
 """
 import struct
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any, Protocol
+from typing import List, Optional, Dict, Any, Protocol, Tuple
 
 from .constants import (
     PLAYER_PARTY_OFFSET, ENEMY_PARTY_OFFSET,
@@ -25,9 +25,12 @@ from .constants import (
     BATTLE_MON_STATUS1, BATTLE_MON_STATUS2, BATTLE_MON_STAT_STAGES, BATTLE_MON_PP,
     STATUS1_SLEEP, STATUS1_POISON, STATUS1_BURN, STATUS1_FREEZE,
     STATUS1_PARALYSIS, STATUS1_TOXIC,
+    BATTLE_OUTCOME_OFFSET, LAST_USED_MOVE_OFFSET, BATTLER_ATTACKER_OFFSET,
+    BATTLE_INPUT_WAIT_FLAG_OFFSET
 )
 from .decoder import EmeraldDecoder, CHAR_MAP
 from .decryption import decrypt_data, unshuffle_substructures, verify_checksum
+from ...core.enums import BattleOutcome
 
 
 class BackendProtocol(Protocol):
@@ -389,6 +392,57 @@ class MemoryReader:
         return ", ".join(names) if names else f"Unknown ({weather})"
     
     # -------------------------------------------------------------------------
+    # Battle State Extension
+    # -------------------------------------------------------------------------
+
+    def read_battle_outcome(self) -> BattleOutcome:
+        """Read the current battle outcome (win/loss/etc)."""
+        val = self._read_u32(BATTLE_OUTCOME_OFFSET) # Actually it's an 8-bit value usually but we can read larger
+        # If we read 0 bytes or something goes wrong, assume ongoing
+        if val is None:
+            return BattleOutcome.ONGOING
+        
+        # gBattleOutcome is a u8 in C, so mask it just in case
+        val = val & 0xFF
+        
+        if val == 1:
+            return BattleOutcome.WIN
+        elif val == 2:
+            return BattleOutcome.LOSS
+        elif val == 3:
+            return BattleOutcome.DRAW
+        elif val == 4:
+            return BattleOutcome.RAN
+        else:
+            return BattleOutcome.ONGOING
+
+    def read_last_move(self) -> Tuple[int, int]:
+        """
+        Read the last used move and who used it.
+        Returns: (move_id, attacker_slot)
+        """
+        move_id = self._read_u16(LAST_USED_MOVE_OFFSET)
+        attacker = self._read_u32(BATTLER_ATTACKER_OFFSET) # u8 in C
+        
+        if move_id is None:
+            move_id = 0
+        if attacker is None:
+            attacker = -1
+        else:
+            attacker = attacker & 0xFF
+            
+        return move_id, attacker
+
+    def read_input_status(self) -> bool:
+        """Check if the game is waiting for player input."""
+        # This is a boolean flag (u8) or bitfield. 
+        # Usually checking if lowest bit is set is safer if it's a bitfield.
+        val = self._read_u32(BATTLE_INPUT_WAIT_FLAG_OFFSET)
+        if val is None:
+            return False
+        return (val & 1) != 0
+
+    # -------------------------------------------------------------------------
     # Frontier State Reading
     # -------------------------------------------------------------------------
     
@@ -480,4 +534,3 @@ class MemoryReader:
         """Test connection to backend."""
         resp = self._send("PING")
         return resp == "PONG"
-

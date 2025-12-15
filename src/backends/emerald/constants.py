@@ -12,6 +12,10 @@ Memory Regions:
 Reading Strategy:
 - Direct addresses (0x02XXXXXX): Use READ_BLOCK or READ_U16/U32
 - Pointer-based (SaveBlocks): Read pointer first, then add offset
+
+Example (reading win streak):
+  base = read_u32(SAVE_BLOCK_2_PTR)  # e.g., returns 0x02039xxx
+  win_streak = read_u16(base + FRONTIER_FACTORY_STREAK_OFFSET)
 """
 
 # ==============================================================================
@@ -86,6 +90,11 @@ TRAINER_ID_OFFSET = 0x02038BCA       # gTrainerId - Current opponent trainer ID
 # Critical for RL agent timing - indicates when player input is expected
 BATTLE_INPUT_WAIT_FLAG_OFFSET = 0x02023E4C  # 0 = Busy/Animating, 1 = Waiting for Input
 
+# Battle Flow / History
+BATTLE_OUTCOME_OFFSET = 0x02023EAC    # gBattleOutcome: 0=Ongoing, 1=Win, 2=Loss, 3=Draw, 4=Ran
+LAST_USED_MOVE_OFFSET = 0x02023E6C    # gLastUsedMove: ID of last move executed
+BATTLER_ATTACKER_OFFSET = 0x02023D6C  # gBattlerAttacker: Who used the move (0-3)
+
 # ==============================================================================
 # SAVE BLOCK POINTERS - Indirect access to save data
 # ==============================================================================
@@ -103,6 +112,9 @@ BATTLE_INPUT_WAIT_FLAG_OFFSET = 0x02023E4C  # 0 = Busy/Animating, 1 = Waiting fo
 
 SAVE_BLOCK_1_PTR = 0x03005D8C  # gSaveBlock1Ptr - Player progress, flags, variables
 SAVE_BLOCK_2_PTR = 0x03005D90  # gSaveBlock2Ptr - Trainer data, Battle Frontier records
+
+# RNG State - Useful for debugging and RNG manipulation
+RNG_VALUE_OFFSET = 0x03005D80   # gRngValue - Current PRNG state (u32)
 
 # ==============================================================================
 # FRONTIER DATA - Battle Frontier state (offsets from SaveBlock2)

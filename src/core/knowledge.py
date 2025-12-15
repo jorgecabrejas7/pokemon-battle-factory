@@ -125,3 +125,86 @@ def get_item_name(item_id: int) -> str:
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else f"Item#{item_id}"
+
+def get_species_base_stats(species_id: int) -> dict:
+    """
+    Get base stats and type info for a species.
+    Returns: {
+        'base_hp': int,
+        'base_attack': int,
+        'base_defense': int,
+        'base_sp_attack': int,
+        'base_sp_defense': int,
+        'base_speed': int,
+        'type1': str,
+        'type2': str,
+        'name': str
+    }
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT 
+            name,
+            base_hp,
+            base_atk,
+            base_def,
+            base_sp_atk,
+            base_sp_def,
+            base_speed,
+            type1,
+            type2
+        FROM species 
+        WHERE id = ?
+    ''', (species_id,))
+    
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return {
+            'base_hp': 0, 'base_attack': 0, 'base_defense': 0, 
+            'base_sp_attack': 0, 'base_sp_defense': 0, 'base_speed': 0,
+            'type1': 'Normal', 'type2': 'Normal', 'name': f"Unknown#{species_id}"
+        }
+    
+    return {
+        'name': row['name'],
+        'base_hp': row['base_hp'],
+        'base_attack': row['base_atk'],
+        'base_defense': row['base_def'],
+        'base_sp_attack': row['base_sp_atk'],
+        'base_sp_defense': row['base_sp_def'],
+        'base_speed': row['base_speed'],
+        'type1': row['type1'],
+        'type2': row['type2']
+    }
+
+def get_move_data(move_id: int) -> dict:
+    """
+    Get detailed move data by ID.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM moves WHERE id = ?
+    ''', (move_id,))
+    
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return {
+            'name': f"Move#{move_id}",
+            'type': 'Normal',
+            'power': 0,
+            'accuracy': 0,
+            'pp': 0,
+            'effect': 'None'
+        }
+    
+    return dict(row)

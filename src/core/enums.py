@@ -34,3 +34,10 @@ class ScreenType(Enum):
     SWAP = auto()
     BATTLE = auto()
     RESULT = auto()
+
+class BattleOutcome(IntEnum):
+    ONGOING = 0
+    WIN = 1
+    LOSS = 2
+    DRAW = 3
+    RAN = 4

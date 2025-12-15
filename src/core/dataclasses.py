@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
-from .enums import MoveCategory, StatusCondition, Weather, Terrain, ScreenType
+from .enums import MoveCategory, StatusCondition, Weather, Terrain, ScreenType, BattleOutcome
 
 @dataclass
 class Move:
@@ -82,6 +82,11 @@ class BattleState:
     # Flags
     is_waiting_for_input: bool = False
     available_actions: List[int] = field(default_factory=list)
+    
+    # Last Action Info
+    last_move_used: Optional[int] = None
+    last_move_user: int = -1  # 0-3
+    battle_outcome: BattleOutcome = BattleOutcome.ONGOING
 
 @dataclass
 class FactoryState:
