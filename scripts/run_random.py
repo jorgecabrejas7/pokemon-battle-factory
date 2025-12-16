@@ -54,9 +54,17 @@ from src.controller import (
     TITLE_TO_CONTINUE,
     DISMISS_DIALOG,
     INIT_FACTORY_CHALLENGE,
+    GameExecutor,
 )
 from src.core.enums import GamePhase, BattleOutcome
 from src.config import config
+
+# Import the actual agent implementations from src/agents
+from src.agents.random_agents import (
+    RandomDrafter,
+    RandomTactician,
+    create_random_agents,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -67,60 +75,8 @@ logger = logging.getLogger("BattleFactoryRunner")
 
 
 # =============================================================================
-# Agent Implementations
+# Interactive Agent Implementations (for manual testing)
 # =============================================================================
-
-class RandomDrafter:
-    """Random drafter that selects Pokemon randomly."""
-    
-    def __init__(self, seed: Optional[int] = None, verbose: bool = False):
-        self.rng = np.random.default_rng(seed)
-        self.verbose = verbose
-    
-    def __call__(self, obs: np.ndarray, phase: GamePhase) -> np.ndarray:
-        """Select action based on phase."""
-        if phase == GamePhase.DRAFT_SCREEN:
-            # Select 3 unique Pokemon from 6
-            choices = self.rng.choice(6, size=3, replace=False)
-            if self.verbose:
-                print(f"  [Drafter] Selecting indices: {list(choices)}")
-            return choices
-        elif phase == GamePhase.SWAP_SCREEN:
-            # 30% chance to swap, preferring not to
-            action = self.rng.choice([0, 1, 2, 3], p=[0.7, 0.1, 0.1, 0.1])
-            if self.verbose:
-                action_str = "keep team" if action == 0 else f"swap slot {action}"
-                print(f"  [Drafter] Swap decision: {action_str}")
-            return np.array([action])
-        return np.array([0])
-
-
-class RandomTactician:
-    """Random tactician that selects valid moves randomly."""
-    
-    def __init__(self, seed: Optional[int] = None, verbose: bool = False):
-        self.rng = np.random.default_rng(seed)
-        self.verbose = verbose
-    
-    def __call__(
-        self,
-        obs: np.ndarray,
-        phase: GamePhase,
-        mask: np.ndarray
-    ) -> int:
-        """Select random valid action."""
-        valid_actions = np.where(mask > 0)[0]
-        if len(valid_actions) == 0:
-            action = 0  # Default to first move
-        else:
-            action = int(self.rng.choice(valid_actions))
-        
-        if self.verbose:
-            action_names = ["Move1", "Move2", "Move3", "Move4", "Switch1", "Switch2"]
-            print(f"  [Tactician] Action: {action_names[action]}")
-        
-        return action
-
 
 class InteractiveDrafter:
     """Interactive drafter that prompts user for input."""
@@ -182,14 +138,6 @@ class InteractiveTactician:
                 print("  Invalid or masked action")
             except ValueError:
                 print("  Enter a number 0-5")
-
-
-def create_random_agents(
-    seed: Optional[int] = None,
-    verbose: bool = False
-) -> tuple[RandomDrafter, RandomTactician]:
-    """Create random agent pair."""
-    return RandomDrafter(seed, verbose), RandomTactician(seed, verbose)
 
 
 def create_interactive_agents() -> tuple[InteractiveDrafter, InteractiveTactician]:
@@ -299,6 +247,25 @@ def run_interactive_mode(controller: TrainingController):
     print("  battle [r/i]  - Run full battle (r=random, i=interactive)")
     print("  turn [0-5]    - Execute single battle turn")
     print("  swap [r/i]    - Run swap phase")
+    print("")
+    print("State Machine Commands:")
+    print("  transitions   - Show valid transitions from current state")
+    print("  goto <phase>  - Transition to phase (e.g., goto IN_BATTLE)")
+    print("  reset <phase> - Force-reset state machine to phase")
+    print("  phases        - List all GamePhase values")
+    print("")
+    print("Memory Inspection:")
+    print("  mem battle    - Show battle mon data")
+    print("  mem rentals   - Show rental pool")
+    print("  mem frontier  - Show frontier state")
+    print("  mem input     - Check IS_WAITING_INPUT")
+    print("  mem outcome   - Check battle outcome")
+    print("  mem rng       - Show RNG value")
+    print("")
+    print("Assertions (testing):")
+    print("  assert phase <PHASE>     - Assert current phase")
+    print("  assert waiting <yes/no>  - Assert input waiting state")
+    print("  assert outcome <OUTCOME> - Assert battle outcome")
     print("")
     print("State Commands:")
     print("  state         - Show current state")
@@ -465,6 +432,178 @@ def run_interactive_mode(controller: TrainingController):
                     initialize=False,  # Already initialized
                 )
             
+            # === State Machine Commands ===
+            elif action == 'transitions':
+                valid = controller._state_machine.get_valid_transitions()
+                print(f"Valid transitions from {controller.phase.name}:")
+                if valid:
+                    for t in valid:
+                        print(f"  -> {t.name}")
+                else:
+                    print("  (none)")
+            
+            elif action == 'goto':
+                if not args:
+                    print("Usage: goto <PHASE> (e.g., goto IN_BATTLE)")
+                else:
+                    try:
+                        phase = GamePhase[args[0].upper()]
+                        if controller._state_machine.can_transition_to(phase):
+                            controller.transition_to(phase)
+                            print(f"✓ Transitioned to {phase.name}")
+                        else:
+                            print(f"✗ Invalid transition from {controller.phase.name} to {phase.name}")
+                            valid = controller._state_machine.get_valid_transitions()
+                            if valid:
+                                print(f"  Valid: {', '.join(t.name for t in valid)}")
+                    except KeyError:
+                        print(f"✗ Unknown phase: {args[0]}")
+            
+            elif action == 'reset':
+                if not args:
+                    print("Usage: reset <PHASE> (e.g., reset DRAFT_SCREEN)")
+                else:
+                    try:
+                        phase = GamePhase[args[0].upper()]
+                        controller.transition_to(phase, force=True)
+                        print(f"✓ Force-reset to {phase.name}")
+                    except KeyError:
+                        print(f"✗ Unknown phase: {args[0]}")
+            
+            elif action == 'phases':
+                print("Available GamePhase values:")
+                for p in GamePhase:
+                    indicator = "<-" if p == controller.phase else ""
+                    print(f"  {p.name} {indicator}")
+            
+            # === Memory Inspection ===
+            elif action == 'mem':
+                if not args:
+                    print("Usage: mem <type> (battle, rentals, frontier, input, outcome, rng)")
+                else:
+                    mem_type = args[0].lower()
+                    backend = controller.backend
+                    
+                    if mem_type == 'battle':
+                        mons = backend.memory.read_battle_mons()
+                        print(f"Battle mons ({len(mons)}):")
+                        for i, mon in enumerate(mons):
+                            print(f"  [{i}] Species ID: {mon.species_id}")
+                            print(f"      Level: {mon.level}")
+                            print(f"      HP: {mon.current_hp}/{mon.max_hp}")
+                            print(f"      Stats: ATK={mon.attack}, DEF={mon.defense}, SPD={mon.speed}, SPATK={mon.sp_attack}, SPDEF={mon.sp_defense}")
+                            print(f"      Moves: {mon.moves}")
+                            print(f"      PP: {mon.pp}")
+                            print(f"      Status: {mon.status_name} (status1={mon.status1}, status2={mon.status2})")
+                            print(f"      Stat Stages: {mon.stat_stages}")
+                    
+                    elif mem_type == 'rentals':
+                        rentals = backend.memory.read_rental_mons()
+                        print(f"Rental mons ({len(rentals)}):")
+                        for i, mon in enumerate(rentals):
+                            print(f"  [{i}] Slot: {mon.slot}")
+                            print(f"      Frontier Mon ID: {mon.frontier_mon_id}")
+                            print(f"      IV Spread: {mon.iv_spread}")
+                            print(f"      Ability Num: {mon.ability_num}")
+                            print(f"      Personality: {mon.personality}")
+                    
+                    elif mem_type == 'party':
+                        party = backend.memory.read_player_party()
+                        print(f"Player party ({len(party)}):")
+                        for i, mon in enumerate(party):
+                            print(f"  [{i}] {mon.nickname} (Species ID: {mon.species_id})")
+                            print(f"      Level: {mon.level}")
+                            print(f"      HP: {mon.current_hp}/{mon.max_hp}")
+                            print(f"      Stats: ATK={mon.attack}, DEF={mon.defense}, SPD={mon.speed}, SPATK={mon.sp_attack}, SPDEF={mon.sp_defense}")
+                            print(f"      Moves: {mon.moves}")
+                            print(f"      Item ID: {mon.item_id}")
+                            print(f"      EVs: {mon.evs}")
+                            print(f"      Valid: {mon.is_valid}")
+                    
+                    elif mem_type == 'enemy':
+                        party = backend.memory.read_enemy_party()
+                        print(f"Enemy party ({len(party)}):")
+                        for i, mon in enumerate(party):
+                            print(f"  [{i}] {mon.nickname} (Species ID: {mon.species_id})")
+                            print(f"      Level: {mon.level}")
+                            print(f"      HP: {mon.current_hp}/{mon.max_hp}")
+                            print(f"      Stats: ATK={mon.attack}, DEF={mon.defense}, SPD={mon.speed}, SPATK={mon.sp_attack}, SPDEF={mon.sp_defense}")
+                            print(f"      Moves: {mon.moves}")
+                            print(f"      Item ID: {mon.item_id}")
+                    
+                    elif mem_type == 'frontier':
+                        state = backend.memory.read_frontier_state()
+                        if state:
+                            print(f"Frontier State:")
+                            print(f"  Facility: {state.facility_name} ({state.facility})")
+                            print(f"  Battle Mode: {'Doubles' if state.battle_mode else 'Singles'}")
+                            print(f"  Level Mode: {'Open' if state.level_mode else 'Lv50'}")
+                            print(f"  Win Streak: {state.win_streak}")
+                            print(f"  Rental Count: {state.rental_count}")
+                        else:
+                            print("No frontier state available")
+                    
+                    elif mem_type == 'input':
+                        waiting = backend.is_waiting_for_input()
+                        print(f"IS_WAITING_INPUT: {waiting}")
+                    
+                    elif mem_type == 'outcome':
+                        outcome = backend.get_battle_outcome()
+                        print(f"Battle Outcome: {outcome.name} ({outcome.value})")
+                    
+                    elif mem_type == 'rng':
+                        rng = backend._send_command("READ_RNG")
+                        print(f"RNG Value: {rng}")
+                    
+                    else:
+                        print(f"Unknown mem type: {mem_type}")
+                        print("Valid: battle, rentals, party, enemy, frontier, input, outcome, rng")
+            
+            # === Assertions ===
+            elif action == 'assert':
+                if len(args) < 2:
+                    print("Usage: assert <type> <value>")
+                    print("  assert phase IN_BATTLE")
+                    print("  assert waiting yes")
+                    print("  assert outcome ONGOING")
+                else:
+                    assert_type = args[0].lower()
+                    assert_value = args[1].upper()
+                    
+                    if assert_type == 'phase':
+                        try:
+                            expected = GamePhase[assert_value]
+                            actual = controller.phase
+                            if actual == expected:
+                                print(f"✓ PASS: phase == {expected.name}")
+                            else:
+                                print(f"✗ FAIL: phase == {actual.name}, expected {expected.name}")
+                        except KeyError:
+                            print(f"Unknown phase: {assert_value}")
+                    
+                    elif assert_type == 'waiting':
+                        expected = assert_value.lower() in ('yes', 'true', '1')
+                        actual = controller.backend.is_waiting_for_input()
+                        if actual == expected:
+                            print(f"✓ PASS: waiting == {actual}")
+                        else:
+                            print(f"✗ FAIL: waiting == {actual}, expected {expected}")
+                    
+                    elif assert_type == 'outcome':
+                        try:
+                            expected = BattleOutcome[assert_value]
+                            actual = controller.backend.get_battle_outcome()
+                            if actual == expected:
+                                print(f"✓ PASS: outcome == {expected.name}")
+                            else:
+                                print(f"✗ FAIL: outcome == {actual.name}, expected {expected.name}")
+                        except KeyError:
+                            print(f"Unknown outcome: {assert_value}")
+                    
+                    else:
+                        print(f"Unknown assert type: {assert_type}")
+                        print("Valid: phase, waiting, outcome")
+            
             else:
                 print(f"Unknown command: {action}")
                 print("Type 'q' to quit")
@@ -592,6 +731,110 @@ def test_connection(controller: TrainingController) -> bool:
 
 
 # =============================================================================
+# Isolated Step Testing
+# =============================================================================
+
+def run_step_test(
+    controller: TrainingController,
+    step_type: str,
+    drafter: Callable,
+    tactician: Callable,
+) -> None:
+    """
+    Test a single step type in isolation with looping.
+    
+    Args:
+        controller: TrainingController instance
+        step_type: One of 'draft', 'battle', 'turn', 'swap'
+        drafter: Drafter agent
+        tactician: Tactician agent
+    """
+    print(f"\n{'='*60}")
+    print(f"STEP TEST MODE: {step_type.upper()}")
+    print(f"{'='*60}")
+    print("Press Enter to run step, 'q' to quit\n")
+    
+    iteration = 0
+    
+    while True:
+        iteration += 1
+        phase_name = controller.phase.name if controller.is_connected else "DISCONNECTED"
+        
+        cmd = input(f"[{phase_name}] Run {step_type} #{iteration}? [Enter/q]: ").strip().lower()
+        if cmd == 'q':
+            break
+        
+        try:
+            if step_type == "draft":
+                print(f"\n--- Draft Step #{iteration} ---")
+                result = controller.step_draft(drafter)
+                print(f"Result: success={result.success}, next={result.next_phase.name}")
+                if result.data:
+                    print(f"Data: {result.data}")
+                    
+            elif step_type == "battle":
+                print(f"\n--- Battle Step #{iteration} ---")
+                result = controller.step_battle(tactician)
+                print(f"Result: success={result.success}, next={result.next_phase.name}")
+                if result.data:
+                    print(f"Data: {result.data}")
+                    
+            elif step_type == "turn":
+                print(f"\n--- Turn Step #{iteration} ---")
+                # Show valid actions
+                mask = controller.get_action_mask()
+                actions = ["Move1", "Move2", "Move3", "Move4", "Switch1", "Switch2"]
+                print("Valid actions:")
+                for i, name in enumerate(actions):
+                    valid = "✓" if mask[i] > 0 else "✗"
+                    print(f"  [{i}] {name} {valid}")
+                
+                # Get action (random or prompt)
+                valid_actions = [i for i in range(6) if mask[i] > 0]
+                if valid_actions:
+                    action = tactician(None, controller.phase, mask)
+                    result = controller.step_turn(action)
+                    print(f"Result: reward={result.reward:.2f}, ended={result.battle_ended}")
+                else:
+                    print("No valid actions available!")
+                    
+            elif step_type == "swap":
+                print(f"\n--- Swap Step #{iteration} ---")
+                result = controller.step_swap(drafter)
+                print(f"Result: success={result.success}, next={result.next_phase.name}")
+                
+        except Exception as e:
+            print(f"Error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    print(f"\nCompleted {iteration - 1} {step_type} iterations")
+
+
+def inject_state(controller: TrainingController, phase_name: str) -> bool:
+    """
+    Inject state machine to a specific phase.
+    
+    Args:
+        controller: TrainingController instance
+        phase_name: GamePhase name (e.g., 'DRAFT_SCREEN', 'IN_BATTLE')
+        
+    Returns:
+        True if successful
+    """
+    try:
+        phase = GamePhase[phase_name.upper()]
+        print(f"Injecting state: {phase.name}")
+        controller.transition_to(phase, force=True)
+        print(f"✓ State machine now at: {controller.phase.name}")
+        return True
+    except KeyError:
+        print(f"✗ Unknown phase: {phase_name}")
+        print(f"Valid phases: {', '.join(p.name for p in GamePhase)}")
+        return False
+
+
+# =============================================================================
 # Main Entry Point
 # =============================================================================
 
@@ -676,6 +919,22 @@ def main():
         help="Custom wait time after buttons in seconds (e.g., 0.02 for very fast)",
     )
     
+    # === Testing/Debugging Arguments ===
+    parser.add_argument(
+        "--inject-state",
+        type=str,
+        default=None,
+        metavar="PHASE",
+        help="Inject state machine to specific GamePhase (e.g., DRAFT_SCREEN, IN_BATTLE). Skips initialization.",
+    )
+    parser.add_argument(
+        "--test-step",
+        type=str,
+        choices=["draft", "battle", "turn", "swap"],
+        default=None,
+        help="Test a single step type in isolation: draft, battle, turn, or swap",
+    )
+    
     args = parser.parse_args()
     
     # Apply speed mode
@@ -721,8 +980,18 @@ def main():
             success = test_connection(controller)
             sys.exit(0 if success else 1)
         
+        # Inject state if requested (skip initialization)
+        if args.inject_state:
+            if not inject_state(controller, args.inject_state):
+                sys.exit(1)
+        
+        # Step test mode
+        if args.test_step:
+            drafter, tactician = create_random_agents(seed=args.seed, verbose=True)
+            run_step_test(controller, args.test_step, drafter, tactician)
+        
         # Interactive mode
-        if args.interactive:
+        elif args.interactive:
             run_interactive_mode(controller)
         
         # Step mode
@@ -737,12 +1006,15 @@ def main():
                 verbose=args.verbose,
             )
             
+            # If not injecting state, do normal initialization
+            should_init = not args.no_init and not args.inject_state
+            
             run_automatic_episodes(
                 controller,
                 drafter,
                 tactician,
                 num_episodes=args.episodes,
-                initialize=not args.no_init,
+                initialize=should_init,
             )
     
     except KeyboardInterrupt:

@@ -34,6 +34,7 @@ from .input import (
     InputController, Button, ButtonSequence, 
     TITLE_TO_CONTINUE, DISMISS_DIALOG, INIT_FACTORY_CHALLENGE
 )
+from .game_executor import GameExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,18 @@ class TrainingController(BaseController):
         """
         super().__init__(backend, verbose)
         self.auto_wait = auto_wait
+        
+        # GameExecutor is initialized after connect() when input controller is available
+        self.executor: Optional[GameExecutor] = None
+    
+    def _ensure_executor(self) -> None:
+        """Ensure GameExecutor is initialized (after connect)."""
+        if self.executor is None and self.input is not None:
+            self.executor = GameExecutor(
+                input_ctrl=self.input,
+                backend=self.backend,
+                verbose=self.verbose
+            )
     
     # =========================================================================
     # Initialization / Navigation
@@ -235,37 +248,10 @@ class TrainingController(BaseController):
             )
     
     def _execute_draft(self, selections: np.ndarray) -> None:
-        """Execute draft selection inputs."""
-        for i, idx in enumerate(selections):
-            idx = int(idx)
-            
-            # Navigate to Pokemon
-            if idx > 0:
-                for _ in range(idx):
-                    self.input.press_right(wait=0.2)
-            
-            time.sleep(0.3)
-            
-            # Open submenu
-            self.input.press_a(wait=0.5)
-            
-            # Navigate to SELECT
-            self.input.press_down(wait=0.3)
-            
-            # Confirm selection
-            self.input.press_a(wait=1.0)
-            
-            # Reset cursor
-            if idx > 0:
-                for _ in range(idx):
-                    self.input.press_left(wait=0.2)
-            
-            time.sleep(0.5)
-        
-        # Final confirmations
-        self.input.press_a(wait=0.5)
-        self.input.press_a(wait=0.5)
-        self.input.press_a(wait=1.0)
+        """Execute draft selection inputs using GameExecutor."""
+        self._ensure_executor()
+        self.executor.set_up_draft_phase()
+        self.executor.execute_draft_selection(list(int(s) for s in selections))
     
     def step_battle(self, agent: Optional[TacticianAgent] = None) -> PhaseResult:
         """
@@ -391,11 +377,9 @@ class TrainingController(BaseController):
             pre_enemy_hp = pre_state.enemy_active_pokemon.hp_percentage if pre_state.enemy_active_pokemon else 0
             pre_player_hp = pre_state.active_pokemon.current_hp if pre_state.active_pokemon else 0
             
-            # Execute action
-            if action < 4:
-                self._execute_move(action)
-            else:
-                self._execute_switch(action - 4)
+            # Execute action using GameExecutor
+            self._ensure_executor()
+            self.executor.execute_battle_action(action)
             
             self.battle_stats.turn_count += 1
             self.run_stats.total_turns += 1
@@ -442,36 +426,8 @@ class TrainingController(BaseController):
                 error=str(e)
             )
     
-    def _execute_move(self, move_index: int) -> None:
-        """Execute move selection (0-3)."""
-        # Select Fight
-        self.input.press_a(wait=config.timing.wait_short)
-        
-        # Navigate to move (2x2 grid)
-        row = move_index // 2
-        col = move_index % 2
-        
-        if row > 0:
-            self.input.press_down()
-        if col > 0:
-            self.input.press_right()
-        
-        # Confirm
-        self.input.press_a(wait=config.timing.wait_short)
-    
-    def _execute_switch(self, pokemon_index: int) -> None:
-        """Execute switch action (0-1)."""
-        # Navigate to Pokemon menu
-        self.input.press_right()
-        self.input.press_a(wait=config.timing.wait_short)
-        
-        # Navigate to Pokemon (skip active)
-        for _ in range(pokemon_index + 1):
-            self.input.press_down()
-        
-        # Select and confirm
-        self.input.press_a(wait=config.timing.wait_short)
-        self.input.press_a(wait=config.timing.wait_short)
+    # NOTE: _execute_move and _execute_switch have been moved to GameExecutor.
+    # Use self.executor.execute_battle_action(action) instead.
     
     def step_swap(self, agent: Optional[DrafterAgent] = None) -> PhaseResult:
         """
@@ -507,14 +463,11 @@ class TrainingController(BaseController):
             
             logger.info(f"  Swap decision: {action} (0=keep)")
             
-            # Execute swap
-            if action == 0:
-                self.input.press_b(wait=config.timing.wait_long)
-            else:
-                for _ in range(action - 1):
-                    self.input.press_down()
-                self.input.press_a(wait=config.timing.wait_medium)
-                self.input.press_a(wait=config.timing.wait_long)
+            # Execute swap using GameExecutor
+            self._ensure_executor()
+            self.executor.set_up_swap_phase()
+            self.executor.execute_swap_decision(action)
+            if action > 0:
                 self.run_stats.swaps_made += 1
             
             self.transition_to(GamePhase.BATTLE_READY, force=True)

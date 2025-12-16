@@ -53,6 +53,8 @@ from .training import (
     TacticianAgent,
 )
 
+from .game_executor import GameExecutor
+
 
 __all__ = [
     # Input
@@ -78,4 +80,6 @@ __all__ = [
     "EpisodeResult",
     "DrafterAgent",
     "TacticianAgent",
+    # Game Executor
+    "GameExecutor",
 ]
