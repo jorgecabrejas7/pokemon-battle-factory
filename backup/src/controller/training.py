@@ -30,10 +30,7 @@ from ..core.exceptions import InvalidStateError
 from ..config import config
 
 from .base import BaseController, RunStats, BattleStats
-from .input import (
-    InputController, Button, ButtonSequence, 
-    TITLE_TO_CONTINUE, DISMISS_DIALOG, INIT_FACTORY_CHALLENGE
-)
+from .input import InputController, Button
 from .game_executor import GameExecutor
 
 logger = logging.getLogger(__name__)
@@ -156,38 +153,9 @@ class TrainingController(BaseController):
         Returns:
             True if successfully reached draft screen
         """
-        self._ensure_connected()
-        logger.info("Initializing to draft screen...")
-        
-        try:
-            if from_title:
-                # Execute navigation sequences
-                logger.info("  Step 1: Title screen...")
-                self.input.execute_sequence(TITLE_TO_CONTINUE)
-                
-                logger.info("  Step 2: Dismiss NPC dialog...")
-                self.input.execute_sequence(DISMISS_DIALOG)
-                
-                logger.info("  Step 3: Initialize challenge...")
-                self.input.execute_sequence(INIT_FACTORY_CHALLENGE)
-            
-            # Verify we're at draft
-            time.sleep(0.5)
-            detected = self.detect_phase()
-            
-            if detected == GamePhase.DRAFT_SCREEN:
-                self.transition_to(GamePhase.DRAFT_SCREEN, force=True)
-                logger.info("✓ Ready at draft screen")
-                return True
-            else:
-                logger.warning(f"Expected DRAFT_SCREEN, detected {detected.name}")
-                self.transition_to(detected, force=True)
-                return detected == GamePhase.DRAFT_SCREEN
-                
-        except Exception as e:
-            logger.error(f"Initialization failed: {e}")
-            self.transition_to(GamePhase.ERROR, force=True)
-            return False
+        self._ensure_executor()
+        logger.info("[TrainingController] Delegate initialization to GameExecutor...")
+        return self.executor.initialize_to_draft(from_title=from_title)
     
     # =========================================================================
     # Phase-Level Steps

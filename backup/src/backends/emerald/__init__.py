@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from .backend import EmeraldBackend
 from .memory_reader import MemoryReader, BattleMon, PartyPokemon, RentalMon, FrontierState
-from .decoder import EmeraldDecoder
-
 __all__ = [
     "EmeraldBackend",
     "MemoryReader",
@@ -20,5 +18,4 @@ __all__ = [
     "PartyPokemon", 
     "RentalMon",
     "FrontierState",
-    "EmeraldDecoder",
 ]

@@ -34,7 +34,6 @@ from ...core.exceptions import (
 )
 from ...config import config, Buttons
 
-from .decoder import EmeraldDecoder
 from .memory_reader import MemoryReader
 
 if TYPE_CHECKING:
@@ -79,7 +78,6 @@ class EmeraldBackend(BattleBackend):
         self._timeout = timeout or config.timing.connection_timeout
         
         self.sock: Optional[socket.socket] = None
-        self.decoder = EmeraldDecoder()
         self.memory: Optional[MemoryReader] = None
         self._connected = False
         

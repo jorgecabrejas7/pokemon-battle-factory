@@ -16,12 +16,14 @@ for screen transitions and animations.
 """
 
 import logging
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, List, Tuple, Union, Protocol
 from dataclasses import dataclass
-from enum import Enum, auto
+
+from .controller.input import Button
 
 if TYPE_CHECKING:
     from .game_controller import GameController
+    from .controller.input import InputController
 
 logger = logging.getLogger(__name__)
 
@@ -29,18 +31,8 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Button Constants
 # =============================================================================
+# Button enum imported from .controller.input
 
-class Button(Enum):
-    """Button inputs for navigation."""
-    A = auto()
-    B = auto()
-    START = auto()
-    SELECT = auto()
-    UP = auto()
-    DOWN = auto()
-    LEFT = auto()
-    RIGHT = auto()
-    WAIT = auto()  # Special: just wait, no input
 
 
 @dataclass
@@ -131,28 +123,30 @@ class NavigationSequence:
         nav.start_factory_challenge()
     """
     
-    def __init__(self, controller: "GameController"):
+    def __init__(self, controller: Union["GameController", "InputController"]):
         """
-        Initialize with a game controller.
+        Initialize with a game controller or input controller.
         
         Args:
-            controller: GameController instance to send inputs to
+            controller: Controller instance to send inputs to
         """
         self.controller = controller
-        self.verbose = controller.verbose
+        self.verbose = getattr(controller, 'verbose', False)
     
     def _execute_step(self, step: NavStep):
         """Execute a single navigation step."""
         import time
         
         # Always print the step description
-        print(f"  → {step.description}")
+        if self.verbose:
+            print(f"  → {step.description}")
         
         if step.button == Button.WAIT:
             time.sleep(step.wait_after)
             return
         
         # Map button enum to controller method
+        # Both GameController and InputController support these
         button_map = {
             Button.A: self.controller.press_a,
             Button.B: self.controller.press_b,
@@ -176,22 +170,19 @@ class NavigationSequence:
         """Hold a button for a duration (for walking)."""
         import time
         
-        button_codes = {
-            Button.A: self.controller.BUTTON_A,
-            Button.B: self.controller.BUTTON_B,
-            Button.START: self.controller.BUTTON_START,
-            Button.SELECT: self.controller.BUTTON_SELECT,
-            Button.UP: self.controller.BUTTON_UP,
-            Button.DOWN: self.controller.BUTTON_DOWN,
-            Button.LEFT: self.controller.BUTTON_LEFT,
-            Button.RIGHT: self.controller.BUTTON_RIGHT,
-        }
+        # support both backend styles (direct or via input controller)
+        backend = getattr(self.controller, 'backend', None)
+        if not backend:
+             logger.warning("No backend found for hold_button")
+             return
+
+        # Use the mask property from Button enum (defined in input.py)
+        code = button.mask
         
-        code = button_codes.get(button)
         if code:
-            self.controller.backend._send_command(f"SET_INPUT {code}")
+            backend._send_command(f"SET_INPUT {code}")
             time.sleep(hold_seconds)
-            self.controller.backend._send_command("SET_INPUT 0")
+            backend._send_command("SET_INPUT 0")
         else:
             logger.warning(f"Unknown button: {button}")
     

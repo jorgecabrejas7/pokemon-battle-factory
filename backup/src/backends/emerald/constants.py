@@ -1,22 +1,26 @@
 """
-RAM Offsets for Pokemon Emerald (US/UK)
-
-Memory addresses verified from BattleFacilitiesAssistant_Emerald_v6.lua by RainingChain
-and cross-referenced with the pret/pokeemerald decompilation project.
-
-Memory Regions:
-- EWRAM: 0x02000000 - 0x02040000 (256KB) - Main game data
-- IWRAM: 0x03000000 - 0x03008000 (32KB)  - Fast access data
-- ROM:   0x08000000+ - Game code and static data
-
-Reading Strategy:
-- Direct addresses (0x02XXXXXX): Use READ_BLOCK or READ_U16/U32
-- Pointer-based (SaveBlocks): Read pointer first, then add offset
-
-Example (reading win streak):
-  base = read_u32(SAVE_BLOCK_2_PTR)  # e.g., returns 0x02039xxx
-  win_streak = read_u16(base + FRONTIER_FACTORY_STREAK_OFFSET)
+Emerald Constants
 """
+
+# ==============================================================================
+# CHARACTER MAP - Gen 3 Text Encoding
+# ==============================================================================
+# Simplified map for commonly used characters
+CHAR_MAP = {
+    0x00: " ", 0xA1: "0", 0xA2: "1", 0xA3: "2", 0xA4: "3", 0xA5: "4", 
+    0xA6: "5", 0xA7: "6", 0xA8: "7", 0xA9: "8", 0xAA: "9",
+    0xBB: "A", 0xBC: "B", 0xBD: "C", 0xBE: "D", 0xBF: "E", 0xC0: "F", 
+    0xC1: "G", 0xC2: "H", 0xC3: "I", 0xC4: "J", 0xC5: "K", 0xC6: "L", 
+    0xC7: "M", 0xC8: "N", 0xC9: "O", 0xCA: "P", 0xCB: "Q", 0xCC: "R", 
+    0xCD: "S", 0xCE: "T", 0xCF: "U", 0xD0: "V", 0xD1: "W", 0xD2: "X", 
+    0xD3: "Y", 0xD4: "Z",
+    0xD5: "a", 0xD6: "b", 0xD7: "c", 0xD8: "d", 0xD9: "e", 0xDA: "f", 
+    0xDB: "g", 0xDC: "h", 0xDD: "i", 0xDE: "j", 0xDF: "k", 0xE0: "l", 
+    0xE1: "m", 0xE2: "n", 0xE3: "o", 0xE4: "p", 0xE5: "q", 0xE6: "r", 
+    0xE7: "s", 0xE8: "t", 0xE9: "u", 0xEA: "v", 0xEB: "w", 0xEC: "x", 
+    0xED: "y", 0xEE: "z",
+    0xFF: "" # Terminator
+}
 
 # ==============================================================================
 # PARTY DATA - Pokemon in player/enemy teams
@@ -91,8 +95,20 @@ TRAINER_ID_OFFSET = 0x02038BCA       # gTrainerId - Current opponent trainer ID
 BATTLE_INPUT_WAIT_FLAG_OFFSET = 0x02023E4C  # 0 = Busy/Animating, 1 = Waiting for Input
 
 # Battle Flow / History
-BATTLE_OUTCOME_OFFSET = 0x02023EAC    # gBattleOutcome: 0=Ongoing, 1=Win, 2=Loss, 3=Draw, 4=Ran
-LAST_USED_MOVE_OFFSET = 0x02023E6C    # gLastUsedMove: ID of last move executed
+# Defined in game_variables_mapo.md
+BATTLE_OUTCOME_OFFSET = 0x0202433A    # gBattleOutcome: 0=Ongoing, 1=Win, 2=Loss, 3=Draw, 4=Ran
+LAST_USED_MOVE_OFFSET = 0x02024248    # gLastMoves (Array of u16) - Note: Mapo says array, check usage
+BATTLE_COMMUNICATION_OFFSET = 0x02024332 # gBattleCommunication
+BATTLER_IN_MENU_ID_OFFSET = 0x020244B8   # gBattlerInMenuId
+BATTLE_TYPE_FLAGS_OFFSET = 0x02022FEC    # gBattleTypeFlags
+DISABLE_STRUCTS_OFFSET = 0x020242BC      # gDisableStructs
+SIDE_TIMERS_OFFSET = 0x02024294          # gSideTimers
+ACTION_SELECTION_CURSOR = 0x020244AC     # gActionSelectionCursor
+MOVE_SELECTION_CURSOR = 0x020244B0       # gMoveSelectionCursor
+MOVE_RESULT_FLAGS_OFFSET = 0x0202427C    # gMoveResultFlags
+BATTLE_RESOURCES_PTR = 0x020244A8        # gBattleResources (Pointer)
+
+# Unverified or Legacy (Keep until confirmed unused)
 BATTLER_ATTACKER_OFFSET = 0x02023D6C  # gBattlerAttacker: Who used the move (0-3)
 
 # ==============================================================================
@@ -115,6 +131,7 @@ SAVE_BLOCK_2_PTR = 0x03005D90  # gSaveBlock2Ptr - Trainer data, Battle Frontier 
 
 # RNG State - Useful for debugging and RNG manipulation
 RNG_VALUE_OFFSET = 0x03005D80   # gRngValue - Current PRNG state (u32)
+MAIN_LOOP_OFFSET = 0x030022C0   # gMain - Input keys, callbacks, game state
 
 # ==============================================================================
 # FRONTIER DATA - Battle Frontier state (offsets from SaveBlock2)

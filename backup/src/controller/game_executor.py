@@ -499,3 +499,49 @@ class GameExecutor:
         
         return result
 
+
+    # =========================================================================
+    # INITIALIZATION (Auto-Navigation)
+    # =========================================================================
+    
+    def initialize_to_draft(self, from_title: bool = True) -> bool:
+        """
+        Auto-navigate from current position to the draft screen.
+        
+        This handles the full sequence:
+        Title -> Continue -> Overworld -> Battle Factory -> Start Challenge -> Draft
+        
+        Args:
+            from_title: If True, assumes starting from title screen
+            
+        Returns:
+            True if successful
+        """
+        if self.verbose:
+            logger.info("[GameExecutor] Initializing to draft screen...")
+        
+        try:
+            # Import navigation locally to avoid circular top-level imports
+            from ..navigation import NavigationSequence
+            
+            # NavigationSequence now accepts InputController
+            nav = NavigationSequence(self.input)
+            
+            if from_title:
+                if self.verbose:
+                    logger.info("  Navigating title screen...")
+                nav.navigate_title_screen()
+                
+                if self.verbose:
+                    logger.info("  Navigating to Battle Factory...")
+                nav.navigate_to_battle_factory()
+                
+                if self.verbose:
+                    logger.info("  Starting challenge...")
+                nav.start_factory_challenge()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"[GameExecutor] Initialization failed: {e}")
+            return False

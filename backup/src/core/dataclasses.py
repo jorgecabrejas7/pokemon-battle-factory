@@ -63,29 +63,54 @@ class EnemyPokemon(BasePokemon):
     revealed_moves: List[Move] = field(default_factory=list)
 
 @dataclass
+class DisableStruct:
+    disable_timer: int = 0
+    disable_move: int = 0
+    encored_move: int = 0
+    encore_timer: int = 0
+    taunt_timer: int = 0
+
+@dataclass
+class SideTimer:
+    reflect_timer: int = 0
+    lightscreen_timer: int = 0
+    mist_timer: int = 0
+    safeguard_timer: int = 0
+
+@dataclass
 class BattleState:
     # Player Side
     active_pokemon: Optional[PlayerPokemon] = None
     party: List[PlayerPokemon] = field(default_factory=list)
     player_side_conditions: int = 0 
+    player_disable_struct: Optional[DisableStruct] = None
+    player_side_timer: Optional[SideTimer] = None
 
     # Enemy Side
     enemy_active_pokemon: Optional[EnemyPokemon] = None
     enemy_party: List[EnemyPokemon] = field(default_factory=list)
     enemy_side_conditions: int = 0 
+    enemy_disable_struct: Optional[DisableStruct] = None
+    enemy_side_timer: Optional[SideTimer] = None
 
     # Field
     weather: Weather = Weather.NONE
     terrain: Terrain = Terrain.NONE
     turn_count: int = 0
+    battle_type_flags: int = 0
 
-    # Flags
+    # Flags & Cursors
     is_waiting_for_input: bool = False
+    battler_in_menu_id: int = 0
+    action_cursor: int = 0
+    move_cursor: int = 0
+    move_result_flags: int = 0
+    
     available_actions: List[int] = field(default_factory=list)
     
     # Last Action Info
-    last_move_used: Optional[int] = None
-    last_move_user: int = -1  # 0-3
+    last_move_used: int = 0
+    last_move_user: int = -1
     battle_outcome: BattleOutcome = BattleOutcome.ONGOING
 
 @dataclass
