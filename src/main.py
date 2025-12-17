@@ -57,7 +57,7 @@ def main():
             print_separator('=')
 
             # Show Rental Candidates
-            if snapshot.phase == "RENTAL/MENU" and snapshot.rental_candidates:
+            if snapshot.phase in ["RENTAL", "SWAP"] and snapshot.rental_candidates:
                 print(f"RENTAL CANDIDATES / SWAP OPTIONS ({len(snapshot.rental_candidates)})")
                 for r in snapshot.rental_candidates:
                     print(f" [{r.slot}] {r.species_name:<15} IVs: {r.ivs:<3} PID: {r.personality:X}")

@@ -187,35 +187,54 @@ class MemoryReader:
 
     def read_snapshot(self) -> BattleFactorySnapshot:
         """Captures the entire relevant state in a single snapshot."""
-        # 1. Battle Outcome
-        outcome = self.client.get_battle_outcome()
-        
-        # 2. Input Wait
+        # 1. Read Critical State Variables
+        outcome = self.client.read_u16(ADDR_BATTLE_OUTCOME) & 0xFF # Read u16 and mask to avoid single-byte read issues
         input_wait = self.client.input_waiting()
-        
-        # 3. RNG
         rng = self.client.read_u32(ADDR_RNG_VALUE)
+        map_layout = self.client.read_u16(ADDR_MAP_LAYOUT_ID)
+        challenge_battle_num = self.client.read_u16(ADDR_CHALLENGE_BATTLE_NUM)
         
-        # 4. Last Moves
+        # 2. Last Moves
         last_moves_data = self.client.read_block(ADDR_LAST_MOVES, 8) 
         last_move_player_id = struct.unpack("<H", last_moves_data[0:2])[0]
         last_move_enemy_id = struct.unpack("<H", last_moves_data[2:4])[0]
         last_move_player = self.db.get_move_name(last_move_player_id) if last_move_player_id else "-"
         last_move_enemy = self.db.get_move_name(last_move_enemy_id) if last_move_enemy_id else "-"
         
-        # Determine Phase
-        phase = "BATTLE" if outcome == 0 else "RENTAL/MENU"
-        
-        # 5. Bulk Read Parties
+        # 3. Read Parties (Needed for Phase Detection)
         player_party = self.read_party(ADDR_PLAYER_PARTY)
         enemy_party = self.read_party(ADDR_ENEMY_PARTY)
         
-        # 6. Read Battle Mons
+        # 4. Phase Detection Logic
+        # | Phase | Layout | Party | Round |
+        # | Rental | 347 | Empty | 0 |
+        # | Swap | 347 | Full | 0-6 |
+        # | Battle | 348 | Full | 0-6 |
+        
+        party_count = len(player_party)
+        phase = "UNKNOWN"
+        
+        if map_layout == LAYOUT_FACTORY_PRE_BATTLE:
+            if party_count == 0:
+                phase = "RENTAL"
+            else:
+                phase = "SWAP"
+        elif map_layout == LAYOUT_FACTORY_BATTLE:
+             phase = "BATTLE"
+             
+        # Fallback/Sanity Check
+        if phase == "UNKNOWN":
+             # If we are in neither layout, we might be in transition or elsewhere?
+             # For now, stick to the known states or report Map ID for debugging
+             phase = f"UNKNOWN(Map:{map_layout})"
+
+        # 5. Read Battle Mons (Only relevant if in Battle phase usually, but good to have)
         active_battlers = self.read_battle_mons()
         
-        # 7. Read Rentals (Only if appropriate, but snapshot should include everything)
-        # It's cheap to read anyway (72 bytes + pointer read)
-        rental_candidates = self.read_rental_mons()
+        # 6. Read Rentals (Only needed in Rental/Swap)
+        rental_candidates = []
+        if phase in ["RENTAL", "SWAP"]:
+             rental_candidates = self.read_rental_mons()
         
         return BattleFactorySnapshot(
             timestamp=time.time(),
@@ -230,7 +249,6 @@ class MemoryReader:
             active_battlers=active_battlers,
             rental_candidates=rental_candidates
         )
-
     # Legacy Game State Method (Deprecated but kept for compat if needed, though we will update main.py)
     def get_game_state(self):
         """Deprecated: Use read_snapshot() instead."""
