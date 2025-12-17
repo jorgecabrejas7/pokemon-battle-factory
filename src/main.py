@@ -38,60 +38,62 @@ def main():
 
     try:
         while True:
+            # 1. Capture Snapshot (Bulk Read)
+            start_time = time.time()
+            snapshot = memory.read_snapshot()
+            req_time = (time.time() - start_time) * 1000
+
             clear_screen()
-            state = memory.get_game_state()
-            print("=== POKEMON EMERALD BATTLE FACTORY OBSERVER ===")
-            print(f"Outcome: {state['outcome']:<15} Wait Input: {state['input_wait']:<5} RNG: {state['rng']:08X}")
-            print(f"Phase:   {state['phase']:<15}")
-            print(f"Last Move (Player): {state['last_move_player']}")
-            print(f"Last Move (Enemy):  {state['last_move_enemy']}")
+            print(f"=== POKEMON EMERALD BATTLE FACTORY OBSERVER ===")
+            print(f"Fetch Time: {req_time:.2f}ms | Timestamp: {snapshot.timestamp:.2f}")
+            
+            outcome_str = {0: "Ongoing", 1: "Won", 2: "Lost", 3: "Draw", 4: "Ran"}.get(snapshot.outcome, f"Unknown({snapshot.outcome})")
+            input_wait_str = "YES" if snapshot.input_wait else "NO"
+            
+            print(f"Outcome: {outcome_str:<15} Wait Input: {input_wait_str:<5} RNG: {snapshot.rng_seed:08X}")
+            print(f"Phase:   {snapshot.phase:<15}")
+            print(f"Last Move (Player): {snapshot.last_move_player}")
+            print(f"Last Move (Enemy):  {snapshot.last_move_enemy}")
             print_separator('=')
 
-            # Show Rental Candidates if in Rental/Menu phase
-            if state['phase'] == "RENTAL/MENU":
-                rentals = memory.read_rental_mons()
-                if rentals:
-                    print(f"RENTAL CANDIDATES / SWAP OPTIONS ({len(rentals)})")
-                    for r in rentals:
-                        print(f" [{r.slot}] {r.species_name:<15} IVs: {r.ivs:<3} PID: {r.personality:X}")
-                    print_separator()
+            # Show Rental Candidates
+            if snapshot.phase == "RENTAL/MENU" and snapshot.rental_candidates:
+                print(f"RENTAL CANDIDATES / SWAP OPTIONS ({len(snapshot.rental_candidates)})")
+                for r in snapshot.rental_candidates:
+                    print(f" [{r.slot}] {r.species_name:<15} IVs: {r.ivs:<3} PID: {r.personality:X}")
+                print_separator()
 
-            # Active Battle (Only if in battle or just to be safe)
-            battle_mons = memory.read_battle_mons()
-            if battle_mons:
-                print(f"ACTIVE BATTLERS ({len(battle_mons)})")
-                
-                for mon in battle_mons:
+            # Active Battle
+            if snapshot.active_battlers:
+                print(f"ACTIVE BATTLERS ({len(snapshot.active_battlers)})")
+                for mon in snapshot.active_battlers:
                     side = "PLAYER" if mon.slot % 2 == 0 else "ENEMY"
                     status_str = memory._get_status_string(mon.status)
                     print(f"[{side} SLOT {mon.slot}] {mon.species_name} (Lv.{mon.level})")
-                    print(f"   HP: {mon.hp}/{mon.max_hp}  Status: {status_str}")
+                    print(f"   HP: {mon.hp}/{mon.max_hp} ({mon.pct_hp*100:.0f}%) Status: {status_str}")
                     print(f"   Moves: {', '.join(mon.moves)}")
-                    # For PP, zip with moves
                     pp_str = ", ".join([f"{pp}" for pp in mon.pp])
                     print(f"   PP:    {pp_str}")
                     print_separator()
 
             # Player Party
             print("PLAYER PARTY (BENCH)")
-            party = memory.read_party(ADDR_PLAYER_PARTY)
-            for i, mon in enumerate(party):
+            for i, mon in enumerate(snapshot.player_party):
                 status_str = memory._get_status_string(mon.status)
                 print(f" {i+1}. {mon.nickname} ({mon.species_name}) Lv.{mon.level}")
                 print(f"     HP: {mon.hp}/{mon.max_hp} | Item: {mon.item_name} | Status: {status_str}")
                 print(f"     Moves: {', '.join(mon.moves)}")
             print_separator()
 
-            # Enemy Party (Cheating :D)
+            # Enemy Party
             print("ENEMY PARTY (For Swapping)")
-            enemy_party = memory.read_party(ADDR_ENEMY_PARTY)
-            for i, mon in enumerate(enemy_party):
+            for i, mon in enumerate(snapshot.enemy_party):
                 print(f" {i+1}. {mon.species_name} Lv.{mon.level} Item: {mon.item_name}")
                 print(f"     HP: {mon.hp}/{mon.max_hp} | Moves: {', '.join(mon.moves)}")
 
             print_separator('=')
             print("Press Ctrl+C to exit.")
-            time.sleep(0.5)
+            # time.sleep(0.5) # Reduced sleep to test performance
 
     except KeyboardInterrupt:
         pass

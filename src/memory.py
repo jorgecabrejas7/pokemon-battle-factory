@@ -1,11 +1,12 @@
-from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 import struct
 import logging
+import time
 from src.client import MgbaClient
 from src.constants import *
 from src.decryption import decrypt_data, unshuffle_substructures, verify_checksum
 from src.db import PokemonDatabase
+from src.models import PartyPokemon, BattlePokemon, RentalPokemon, BattleFactorySnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -23,44 +24,6 @@ def decode_string(data: bytes) -> str:
         else:
             res += "?"
     return res
-
-@dataclass
-class PartyPokemon:
-    pid: int
-    species_id: int
-    species_name: str
-    moves: List[str]
-    pp: List[int]
-    hp: int
-    max_hp: int
-    level: int
-    nickname: str
-    status: int
-    item_name: str
-
-@dataclass
-class BattlePokemon:
-    slot: int
-    species_id: int
-    species_name: str
-    hp: int
-    max_hp: int
-    level: int
-    status: int
-    moves: List[str]
-    pp: List[int] 
-
-@dataclass
-class RentalPokemon:
-    slot: int
-    species_id: int
-    species_name: str
-    ivs: int
-    ability_num: int
-    personality: int
-    
-    def __str__(self):
-        return f"{self.species_name} (IVs: {self.ivs})"
 
 class MemoryReader:
     def __init__(self, client: MgbaClient):
@@ -84,10 +47,16 @@ class MemoryReader:
         return "|".join(s)
 
     def read_party(self, address: int, count: int = 6) -> List[PartyPokemon]:
+        """Reads a list of Pokemon from memory using a single bulk read."""
+        total_size = SIZE_POKEMON * count
+        # Bulk read the entire party block
+        party_data = self.client.read_block(address, total_size)
+        
         party = []
         for i in range(count):
             offset = i * SIZE_POKEMON
-            data = self.client.read_block(address + offset, SIZE_POKEMON)
+            data = party_data[offset : offset + SIZE_POKEMON]
+            
             pid = struct.unpack("<I", data[0:4])[0]
             
             if pid == 0:
@@ -143,25 +112,20 @@ class MemoryReader:
         return party
 
     def read_battle_mons(self) -> List[BattlePokemon]:
+        """Reads all 4 active battle mons in a single bulk read."""
+        total_size = SIZE_BATTLE_MON * 4
+        data_block = self.client.read_block(ADDR_BATTLE_MONS, total_size)
+        
         battle_mons = []
         for i in range(4):
             offset = i * SIZE_BATTLE_MON
-            data = self.client.read_block(ADDR_BATTLE_MONS + offset, SIZE_BATTLE_MON)
+            data = data_block[offset : offset + SIZE_BATTLE_MON]
             
             species_id = struct.unpack("<H", data[0:2])[0]
             if species_id == 0:
                 continue
                 
-            # Correct Offsets for Gen 3 BattlePokemon (gBattleMons)
-            # 0x0C: Moves (u16 * 4)
-            # 0x14: PP (u8 * 4)
-            # 0x28: HP (u16)
-            # 0x2A: MaxHP (u16)
-            # 0x2C: Level (u8)
-            # 0x4C: Status1 (u32)
-            
             # Offsets based on pokeemerald struct BattlePokemon
-            # Moves: 0x0C (12) -> 4 * u16 = 8 bytes (12-20)
             moves_coords = [
                 struct.unpack("<H", data[12:14])[0],
                 struct.unpack("<H", data[14:16])[0],
@@ -169,19 +133,10 @@ class MemoryReader:
                 struct.unpack("<H", data[18:20])[0],
             ]
             
-            # PP: 0x24 (36) -> 4 * u8 = 4 bytes (36-40)
             pp = [data[36], data[37], data[38], data[39]]
-            
-            # HP: 0x28 (40) -> u16
             hp = struct.unpack("<H", data[40:42])[0]
-            
-            # Level: 0x2A (42) -> u8
             level = data[42]
-            
-            # Max HP: 0x2C (44) -> u16
             max_hp = struct.unpack("<H", data[44:46])[0]
-            
-            # Status: 0x4C (76) -> u32
             status = struct.unpack("<I", data[76:80])[0]
 
             species_name = self.db.get_species_name(species_id)
@@ -222,7 +177,7 @@ class MemoryReader:
             
             rentals.append(RentalPokemon(
                 slot=i,
-                species_id=facility_mon_id, # Keeping as ID, but technically it's facility ID
+                species_id=facility_mon_id,
                 species_name=self.db.get_rental_mon_species_name(facility_mon_id),
                 ivs=ivs,
                 ability_num=ability,
@@ -230,26 +185,61 @@ class MemoryReader:
             ))
         return rentals
 
-    def get_game_state(self):
-        outcome_map = {0: "Ongoing", 1: "Won", 2: "Lost", 3: "Draw", 4: "Ran"}
-        outcome = self.client.read_block(ADDR_BATTLE_OUTCOME, 1)[0]
+    def read_snapshot(self) -> BattleFactorySnapshot:
+        """Captures the entire relevant state in a single snapshot."""
+        # 1. Battle Outcome
+        outcome = self.client.get_battle_outcome()
+        
+        # 2. Input Wait
+        input_wait = self.client.input_waiting()
+        
+        # 3. RNG
+        rng = self.client.read_u32(ADDR_RNG_VALUE)
+        
+        # 4. Last Moves
+        last_moves_data = self.client.read_block(ADDR_LAST_MOVES, 8) 
+        last_move_player_id = struct.unpack("<H", last_moves_data[0:2])[0]
+        last_move_enemy_id = struct.unpack("<H", last_moves_data[2:4])[0]
+        last_move_player = self.db.get_move_name(last_move_player_id) if last_move_player_id else "-"
+        last_move_enemy = self.db.get_move_name(last_move_enemy_id) if last_move_enemy_id else "-"
         
         # Determine Phase
-        # Simple heuristic: If outcome is 0, we are in battle.
-        # If outcome is not 0, we are likely in a menu, overworld, or rental selection.
-        # Ideally we'd check specific callbacks or menu IDs, but this serves the purpose for now.
         phase = "BATTLE" if outcome == 0 else "RENTAL/MENU"
         
-        # Read gLastMoves array (size 4 * 2 = 8 bytes)
-        last_moves_data = self.client.read_block(0x02024248, 8) 
-        last_move_player = struct.unpack("<H", last_moves_data[0:2])[0]
-        last_move_enemy = struct.unpack("<H", last_moves_data[2:4])[0]
+        # 5. Bulk Read Parties
+        player_party = self.read_party(ADDR_PLAYER_PARTY)
+        enemy_party = self.read_party(ADDR_ENEMY_PARTY)
         
+        # 6. Read Battle Mons
+        active_battlers = self.read_battle_mons()
+        
+        # 7. Read Rentals (Only if appropriate, but snapshot should include everything)
+        # It's cheap to read anyway (72 bytes + pointer read)
+        rental_candidates = self.read_rental_mons()
+        
+        return BattleFactorySnapshot(
+            timestamp=time.time(),
+            phase=phase,
+            outcome=outcome,
+            input_wait=input_wait,
+            rng_seed=rng,
+            last_move_player=last_move_player,
+            last_move_enemy=last_move_enemy,
+            player_party=player_party,
+            enemy_party=enemy_party,
+            active_battlers=active_battlers,
+            rental_candidates=rental_candidates
+        )
+
+    # Legacy Game State Method (Deprecated but kept for compat if needed, though we will update main.py)
+    def get_game_state(self):
+        """Deprecated: Use read_snapshot() instead."""
+        snapshot = self.read_snapshot()
         return {
-             "outcome": outcome_map.get(outcome, f"Unknown({outcome})"),
-             "input_wait": "YES" if self.client.input_waiting() else "NO",
-             "rng": self.client.read_u32(ADDR_RNG_VALUE),
-             "last_move_player": self.db.get_move_name(last_move_player) if last_move_player else "-",
-             "last_move_enemy": self.db.get_move_name(last_move_enemy) if last_move_enemy else "-",
-             "phase": phase
+             "outcome": {0: "Ongoing", 1: "Won", 2: "Lost", 3: "Draw", 4: "Ran"}.get(snapshot.outcome, f"Unknown({snapshot.outcome})"),
+             "input_wait": "YES" if snapshot.input_wait else "NO",
+             "rng": snapshot.rng_seed,
+             "last_move_player": snapshot.last_move_player,
+             "last_move_enemy": snapshot.last_move_enemy,
+             "phase": snapshot.phase
         }
