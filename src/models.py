@@ -235,6 +235,21 @@ class RentalPokemon:
         return f"{self.species_name} (IVs: {self.ivs})"
 
 @dataclass
+class FrontierMetadata:
+    """Battle Frontier specific metadata.
+    
+    Attributes:
+        lvl_mode (int): 0=Level 50, 1=Open Level.
+        battle_num (int): Current battle number in the streak (0-6).
+        rental_count (int): Number of rentals available/used.
+    """
+    lvl_mode: int
+    battle_num: int
+    rental_count: int
+    # Future: Facility Type, Win Streak
+
+
+@dataclass
 class BattleFactorySnapshot:
     """Unified snapshot of the game state at a specific point in time.
 
@@ -274,4 +289,6 @@ class BattleFactorySnapshot:
     
     # Metadata
     frame_count: int = 0  # Could be useful if we track frames
+    frontier_info: Optional[FrontierMetadata] = None
+
 

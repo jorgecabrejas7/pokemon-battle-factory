@@ -6,7 +6,7 @@ from src.client import MgbaClient
 from src.constants import *
 from src.decryption import decrypt_data, unshuffle_substructures, verify_checksum
 from src.db import PokemonDatabase
-from src.models import PartyPokemon, BattlePokemon, RentalPokemon, BattleFactorySnapshot
+from src.models import PartyPokemon, BattlePokemon, RentalPokemon, BattleFactorySnapshot, FrontierMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +421,32 @@ class MemoryReader:
             ))
         return rentals
 
+    def read_frontier_metadata(self) -> Optional[FrontierMetadata]:
+        """Reads Battle Frontier metadata from SaveBlock2."""
+        sb2 = self.client.read_u32(ADDR_SAVEBLOCK2_PTR)
+        if not sb2: return None
+        
+        # Read Frontier Vars
+        # lv_mode: u8 at OFFSET_FRONTIER_LVL_MODE
+        lvl_mode = self.client.read_u8(sb2 + OFFSET_FRONTIER_LVL_MODE)
+        
+        # battle_num: u16 at OFFSET_FRONTIER_BATTLE_NUM
+        # Note: logic in constants.py says u16.
+        battle_num = self.client.read_u16(sb2 + OFFSET_FRONTIER_BATTLE_NUM)
+        
+        # We can infer rental count or read it if we had an offset?
+        # For now, just placeholder or deduce from rental array size?
+        # Actually OFFSET_FACTORY_RENTS_COUNT is defined in constants. But it says u16[][]?
+        # Let's just store 0 for now or derive validation.
+        rental_count = 0
+        
+        return FrontierMetadata(
+            lvl_mode=lvl_mode,
+            battle_num=battle_num,
+            rental_count=rental_count
+        )
+
+
     def read_snapshot(self) -> BattleFactorySnapshot:
         """Captures the entire relevant state in a single snapshot.
         
@@ -496,6 +522,9 @@ class MemoryReader:
         if phase in ["RENTAL", "SWAP"]:
             rental_candidates = self.read_rental_mons()
         
+        # 7. Read Frontier Metadata
+        frontier_info = self.read_frontier_metadata()
+        
         return BattleFactorySnapshot(
             timestamp=time.time(),
             phase=phase,
@@ -508,7 +537,8 @@ class MemoryReader:
             player_party=player_party,
             enemy_party=enemy_party,
             active_battlers=active_battlers,
-            rental_candidates=rental_candidates
+            rental_candidates=rental_candidates,
+            frontier_info=frontier_info
         )
     # Legacy Game State Method (Deprecated but kept for compat if needed, though we will update main.py)
     def get_game_state(self):

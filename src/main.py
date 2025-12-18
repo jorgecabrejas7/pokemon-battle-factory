@@ -68,6 +68,9 @@ def main():
             outcome_map = {0: "Ongoing", 1: "Won", 2: "Lost", 3: "Draw", 4: "Ran"}
             print(f"Outcome: {outcome_map.get(snapshot.outcome, f'Unknown({snapshot.outcome})')}         Wait Input: {'YES' if snapshot.input_wait else 'NO'}   RNG: {snapshot.rng_seed:X}")
             print(f"Phase:   {snapshot.phase.ljust(15)} Weather: {snapshot.weather}")
+            if snapshot.frontier_info:
+                lvl_str = "Open Level" if snapshot.frontier_info.lvl_mode == 1 else "Level 50"
+                print(f"Frontier: {lvl_str} | Battle #{snapshot.frontier_info.battle_num + 1}")
             print(f"Last Move (Player): {snapshot.last_move_player.ljust(15)}")
             print(f"Last Move (Enemy):  {snapshot.last_move_enemy.ljust(35)}")
             print_separator('=')
