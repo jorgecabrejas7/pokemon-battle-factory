@@ -1,11 +1,30 @@
 import sqlite3
 import re
 import os
+from typing import List, Tuple
+
+"""
+Item Seeder.
+
+Reads `item_constants.h` to populate the `items` table in the database with basic
+identifier/name mapping. This often acts as a fallback or pre-fill step.
+
+Usage:
+    python3 scripts/seed_items.py
+"""
 
 DB_PATH = "src/data/knowledge_base.db"
-HEADER_PATH = "backup/src/data/raw/item_constants.h"
+HEADER_PATH = "data/raw/item_constants.h"
 
-def parse_header(path):
+def parse_header(path: str) -> List[Tuple[int, str]]:
+    """Parses item constants into ID/Name pairs.
+
+    Args:
+        path (str): Path to `item_constants.h`.
+
+    Returns:
+        List[Tuple[int, str]]: List of (id, name) tuples.
+    """
     items = []
     with open(path, 'r') as f:
         for line in f:
@@ -18,7 +37,12 @@ def parse_header(path):
                 items.append((item_id, name))
     return items
 
-def seed_db(items):
+def seed_db(items: List[Tuple[int, str]]) -> None:
+    """Inserts item data into the database.
+
+    Args:
+        items (List[Tuple[int, str]]): List of item data to insert.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     

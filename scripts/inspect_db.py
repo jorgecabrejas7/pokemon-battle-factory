@@ -2,9 +2,26 @@ import sqlite3
 import argparse
 import os
 
+"""
+DB Inspection Utility.
+
+Allows querying and viewing the `knowledge_base.db` content from the command line.
+Useful for debugging data ingestion or checking specific Pokémon data.
+
+Usage:
+    python3 scripts/inspect_db.py --limit 20
+    python3 scripts/inspect_db.py "Pikachu"
+"""
+
 DB_PATH = "src/data/knowledge_base.db"
 
-def inspect_db(limit=10, search=None):
+def inspect_db(limit: int = 10, search: str = None) -> None:
+    """Queries the database for Battle Frontier Pokémon and prints a formatted table.
+
+    Args:
+        limit (int): Max number of rows to return.
+        search (str): Optional search term (Species Name or ID).
+    """
     if not os.path.exists(DB_PATH):
         print(f"Database not found at {DB_PATH}")
         return
